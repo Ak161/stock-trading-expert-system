@@ -7,11 +7,19 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import openai
+import os
+
+# =========================
+# 从环境变量读取默认配置（用于部署）
+# =========================
+DEFAULT_API_KEY = os.getenv("AI_API_KEY", "")
+DEFAULT_BASE_URL = os.getenv("AI_BASE_URL", "https://aihubmix.com/v1")
+DEFAULT_MODEL = os.getenv("AI_MODEL", "deepseek-v3.2")
 
 # =========================
 # 页面配置与专业UI
 # =========================
-st.set_page_config(layout="wide", page_title="交易员：量价趋势洞察系统")
+st.set_page_config(layout="wide", page_title="交易员：量价趋势洞察系统 (Pro)")
 
 st.markdown("""
     <style>
@@ -61,9 +69,13 @@ if total > 0:
 st.sidebar.subheader("🤖 AI 智能分析")
 enable_ai = st.sidebar.checkbox("启用AI深度分析 (deepseek-v3.2)", value=False)
 if enable_ai:
-    ai_api_key = st.sidebar.text_input("AIHubMix API Key", type="password", value="<AIHUBMIX_API_KEY>")
-    ai_base_url = st.sidebar.text_input("API Base URL", value="https://aihubmix.com/v1")
-    ai_model = st.sidebar.selectbox("选择模型", ["deepseek-v3.2", "gpt-4", "claude-3-opus", "gemini-pro"], index=0)
+    # 使用环境变量默认值填充输入框，但允许用户修改
+    ai_api_key = st.sidebar.text_input("AIHubMix API Key", type="password", value=DEFAULT_API_KEY)
+    ai_base_url = st.sidebar.text_input("API Base URL", value=DEFAULT_BASE_URL)
+    # 模型选择：根据环境变量默认值设置索引
+    model_options = ["deepseek-v3.2", "gpt-4", "claude-3-opus", "gemini-pro"]
+    default_index = model_options.index(DEFAULT_MODEL) if DEFAULT_MODEL in model_options else 0
+    ai_model = st.sidebar.selectbox("选择模型", model_options, index=default_index)
 
 # 帮助文档折叠
 with st.sidebar.expander("📖 使用帮助"):
