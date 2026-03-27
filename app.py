@@ -8,11 +8,10 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 # =========================
-# 页面配置与专业UI ()
+# 页面配置与专业UI
 # =========================
-st.set_page_config(layout="wide", page_title="老练交易员：量价趋势洞察系统 ")
+st.set_page_config(layout="wide", page_title="老练交易员：量价趋势洞察系统 (Pro)")
 
-# 自定义CSS：优化配色，减轻黑色背景，增加专业感
 st.markdown("""
     <style>
     .main { background-color: #f0f2f6; color: #1e293b; }
@@ -31,15 +30,33 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🦅 老练交易员：量价趋势洞察系统 ")
+st.title("🦅 老练交易员：量价趋势洞察系统 (Pro)")
 st.markdown("""
-本系统致力于还原**职业交易员**的决策逻辑，并完整展示每一步推导过程。
-> **核心逻辑：** 趋势定仓位，量价定强弱，结构定买卖，ATR定风控。
+本系统模拟职业交易员的深度决策逻辑，动态分析趋势、量价、资金流向，并结合风控给出实战建议。
+> **核心原则**：趋势定方向，量价定强弱，结构定买卖，风控定仓位。
 """)
 
+# =========================
+# 侧边栏控制台
+# =========================
+st.sidebar.header("🛠️ 交易控制台")
+ticker_input = st.sidebar.text_input("输入标的代码 (如 000001, AAPL)", "000001")
+period_select = st.sidebar.selectbox("回测周期 (显示长度)", ["1y", "2y", "5y"], index=0)
+
+# 多周期权重调节
+st.sidebar.subheader("📊 多周期权重")
+w_d = st.sidebar.slider("日线权重", 0.0, 1.0, 0.5, 0.05)
+w_w = st.sidebar.slider("周线权重", 0.0, 1.0, 0.3, 0.05)
+w_h = st.sidebar.slider("小时线权重", 0.0, 1.0, 0.2, 0.05)
+# 归一化
+total = w_d + w_w + w_h
+if total > 0:
+    w_d /= total
+    w_w /= total
+    w_h /= total
 
 # =========================
-# 工具函数：代码标准化与名称获取
+# 工具函数
 # =========================
 def normalize_ticker(ticker):
     ticker = ticker.strip().upper()
@@ -49,7 +66,6 @@ def normalize_ticker(ticker):
         elif ticker.startswith(("00", "30")):
             return ticker + ".SZ"
     return ticker
-
 
 @st.cache_data(ttl=86400)
 def get_stock_info(ticker):
@@ -61,36 +77,34 @@ def get_stock_info(ticker):
     except:
         return ticker
 
-
-# =========================
-# 数据引擎：获取与清洗
-# =========================
 @st.cache_data(ttl=3600)
-def get_data(ticker, period="2y", interval="1d"):
+def get_data(ticker, period="5y", interval="1d"):
     try:
         ticker_norm = normalize_ticker(ticker)
+        # 确保获取足够长的数据用于指标计算
         fetch_period = "max" if period in ["5y", "max"] else "5y"
         df = yf.download(ticker_norm, period=fetch_period, interval=interval, progress=False)
-
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-
         return df.dropna()
     except Exception as e:
         st.error(f"数据获取失败 ({ticker}): {e}")
         return None
 
-
 # =========================
-# 核心指标库
+# 高级指标计算（一次性完成）
 # =========================
 def add_advanced_indicators(df):
-    if df is None or len(df) < 2: return df
+    if df is None or len(df) < 60:
+        return df
     df = df.copy()
     close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    volume = df["Volume"]
 
-    # 均线系统
+    # 均线
     df["MA5"] = close.rolling(5).mean()
     df["MA10"] = close.rolling(10).mean()
     df["MA20"] = close.rolling(20).mean()
@@ -98,11 +112,22 @@ def add_advanced_indicators(df):
     df["MA120"] = close.rolling(120).mean()
 
     # 量能
-    df["VOL_MA20"] = df["Volume"].rolling(20).mean()
-    df["Vol_Ratio"] = df["Volume"] / df["VOL_MA20"].replace(0, np.nan)
+    df["VOL_MA20"] = volume.rolling(20).mean()
+    df["Vol_Ratio"] = volume / df["VOL_MA20"].replace(0, np.nan)
+
+    # 动态量比阈值（基于最近60日）
+    vol_ratio_series = df["Vol_Ratio"].dropna()
+    if len(vol_ratio_series) >= 60:
+        vol_mean = vol_ratio_series.tail(60).mean()
+        vol_std = vol_ratio_series.tail(60).std()
+        df["Vol_Ratio_Threshold_High"] = vol_mean + vol_std
+        df["Vol_Ratio_Threshold_Low"] = vol_mean - vol_std
+    else:
+        df["Vol_Ratio_Threshold_High"] = 1.5
+        df["Vol_Ratio_Threshold_Low"] = 0.8
 
     # OBV
-    df['OBV'] = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
+    df['OBV'] = (np.sign(close.diff()) * volume).fillna(0).cumsum()
     df['OBV_MA20'] = df['OBV'].rolling(20).mean()
 
     # RSI
@@ -113,227 +138,315 @@ def add_advanced_indicators(df):
     df["RSI"] = 100 - (100 / (1 + rs))
 
     # ATR
-    high_low = df["High"] - df["Low"]
-    high_prev_close = np.abs(df["High"] - df["Close"].shift())
-    low_prev_close = np.abs(df["Low"] - df["Close"].shift())
+    high_low = high - low
+    high_prev_close = np.abs(high - close.shift())
+    low_prev_close = np.abs(low - close.shift())
     tr = pd.concat([high_low, high_prev_close, low_prev_close], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(14).mean()
 
+    # ADX (14)
+    plus_dm = high.diff()
+    minus_dm = low.diff()
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm > 0] = 0
+    minus_dm = abs(minus_dm)
+    atr_14 = df["ATR"]
+    plus_di = 100 * (plus_dm.rolling(14).mean() / atr_14)
+    minus_di = 100 * (minus_dm.rolling(14).mean() / atr_14)
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    df["ADX"] = dx.rolling(14).mean()
+    df["+DI"] = plus_di
+    df["-DI"] = minus_di
+
+    # CMF (Chaikin Money Flow, 20期)
+    mf_mult = ((close - low) - (high - close)) / (high - low).replace(0, np.nan)
+    mf_volume = mf_mult * volume
+    df["CMF"] = mf_volume.rolling(20).sum() / volume.rolling(20).sum()
+
     return df
 
+# =========================
+# 关键支撑/阻力位识别
+# =========================
+def find_support_resistance(df, lookback=50):
+    """基于近期高低点识别关键支撑阻力"""
+    recent = df.tail(lookback)
+    # 局部高点：前后各5根K线内最高
+    highs = recent["High"]
+    resistance_candidates = []
+    for i in range(5, len(highs)-5):
+        if highs.iloc[i] == highs.iloc[i-5:i+6].max():
+            resistance_candidates.append(highs.iloc[i])
+    # 局部低点
+    lows = recent["Low"]
+    support_candidates = []
+    for i in range(5, len(lows)-5):
+        if lows.iloc[i] == lows.iloc[i-5:i+6].min():
+            support_candidates.append(lows.iloc[i])
+
+    # 取最近且显著的（取均值附近）
+    if resistance_candidates:
+        resistance = np.mean(resistance_candidates[-3:])  # 最近三个高点平均
+    else:
+        resistance = df["High"].tail(20).max()
+    if support_candidates:
+        support = np.mean(support_candidates[-3:])
+    else:
+        support = df["Low"].tail(20).min()
+    return support, resistance
 
 # =========================
-# 详细决策推导引擎
+# OBV背离检测
+# =========================
+def detect_obv_divergence(df, lookback=20):
+    """检测OBV与价格的顶背离/底背离"""
+    close = df["Close"].tail(lookback)
+    obv = df["OBV"].tail(lookback)
+    # 找价格峰值和OBV峰值
+    price_peaks = (close == close.rolling(5, center=True).max())
+    obv_peaks = (obv == obv.rolling(5, center=True).max())
+    # 找价格谷底
+    price_troughs = (close == close.rolling(5, center=True).min())
+    obv_troughs = (obv == obv.rolling(5, center=True).min())
+
+    # 顶背离：价格创新高，OBV未创新高
+    price_high_idx = close[price_peaks].index
+    if len(price_high_idx) >= 2:
+        last_high = price_high_idx[-1]
+        prev_high = price_high_idx[-2]
+        if close[last_high] > close[prev_high] and obv[last_high] <= obv[prev_high]:
+            return "顶背离"
+    # 底背离：价格创新低，OBV未创新低
+    price_low_idx = close[price_troughs].index
+    if len(price_low_idx) >= 2:
+        last_low = price_low_idx[-1]
+        prev_low = price_low_idx[-2]
+        if close[last_low] < close[prev_low] and obv[last_low] >= obv[prev_low]:
+            return "底背离"
+    return "无背离"
+
+# =========================
+# 动态评分与决策
 # =========================
 def detailed_analysis(df):
-    """返回包含详细推导过程的分析结果"""
-    if df is None or len(df) < 20:
+    if df is None or len(df) < 60:
         return None
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     price = latest["Close"]
-    vol_ratio = latest["Vol_Ratio"]
-    rsi = latest["RSI"]
 
-    # 获取均线数据
+    # 获取关键指标
     ma5 = latest.get("MA5", price)
     ma10 = latest.get("MA10", price)
     ma20 = latest.get("MA20", price)
     ma60 = latest.get("MA60", price)
     ma120 = latest.get("MA120", price)
+    vol_ratio = latest["Vol_Ratio"]
+    rsi = latest["RSI"]
+    adx = latest.get("ADX", 20)
+    plus_di = latest.get("+DI", 25)
+    minus_di = latest.get("-DI", 25)
+    cmf = latest.get("CMF", 0)
+    obv = latest["OBV"]
+    obv_ma = latest["OBV_MA20"]
 
-    # ========== 第一步：趋势判断 ==========
-    trend_analysis = {
-        "ma5_vs_ma10": ma5 > ma10,
-        "ma10_vs_ma20": ma10 > ma20,
-        "ma20_vs_ma60": ma20 > ma60,
-        "price_vs_ma20": price > ma20,
-        "price_vs_ma60": price > ma60,
-    }
+    # 动态量比阈值
+    vol_high_th = latest.get("Vol_Ratio_Threshold_High", 1.5)
+    vol_low_th = latest.get("Vol_Ratio_Threshold_Low", 0.8)
 
-    # 趋势定性
+    # 趋势判断（结合ADX）
     is_bullish_alignment = ma5 > ma10 > ma20
     is_above_ma60 = price > ma60
-
-    if is_bullish_alignment and is_above_ma60:
-        trend_desc = "强力多头"
-        trend_score = 25
-    elif price > ma20 > ma60:
-        trend_desc = "多头初期"
-        trend_score = 20
-    elif price > ma20 and ma20 < ma60:
-        trend_desc = "震荡筑底"
-        trend_score = 10
+    if adx > 25:
+        trend_strength = "强趋势"
+        if plus_di > minus_di:
+            trend_desc = "强势多头"
+            trend_score = 30
+        else:
+            trend_desc = "强势空头"
+            trend_score = 0
     else:
-        trend_desc = "空头趋势"
-        trend_score = 0
+        trend_strength = "震荡/弱趋势"
+        if is_bullish_alignment and is_above_ma60:
+            trend_desc = "多头初期"
+            trend_score = 20
+        elif price > ma20 and ma20 < ma60:
+            trend_desc = "震荡筑底"
+            trend_score = 10
+        else:
+            trend_desc = "空头趋势"
+            trend_score = 0
 
-    # ========== 第二步：量价结构判断 ==========
+    # 量价结构（动态阈值）
     price_change = price - prev["Close"]
-    vol_ratio_prev5 = df["Vol_Ratio"].tail(5).mean()
-
-    if price > prev["Close"] and vol_ratio > 1.5:
+    if price > prev["Close"] and vol_ratio > vol_high_th:
         vpa_signal = "放量进攻"
         vpa_score = 20
-        vpa_detail = f"价格上涨+放量：当前量比{vol_ratio:.2f}，远超1.5阈值，表现强势"
-    elif price < prev["Close"] and vol_ratio < 0.8 and price > ma20:
+        vpa_detail = f"价格上涨+放量：当前量比{vol_ratio:.2f}，超过动态上轨{vol_high_th:.2f}，买盘积极"
+    elif price < prev["Close"] and vol_ratio < vol_low_th and price > ma20:
         vpa_signal = "良性回踩"
         vpa_score = 15
-        vpa_detail = f"价格下跌但缩量：当前量比{vol_ratio:.2f}，低于0.8阈值，说明抛压不重"
-    elif price > prev["Close"] and vol_ratio < 0.6:
+        vpa_detail = f"价格下跌但缩量：量比{vol_ratio:.2f}低于动态下轨{vol_low_th:.2f}，抛压减轻"
+    elif price > prev["Close"] and vol_ratio < vol_low_th:
         vpa_signal = "诱多背离"
         vpa_score = 5
-        vpa_detail = f"价格上涨但缩量：当前量比{vol_ratio:.2f}，低于0.6阈值，上涨乏力"
-    elif price < prev["Close"] and vol_ratio > 2.0:
+        vpa_detail = f"价格上涨但缩量：量比低于下轨，上涨乏力"
+    elif price < prev["Close"] and vol_ratio > vol_high_th:
         vpa_signal = "恐慌放量"
         vpa_score = 0
-        vpa_detail = f"价格下跌+放量：当前量比{vol_ratio:.2f}，远超2.0阈值，抛压严重"
+        vpa_detail = f"价格下跌+放量：恐慌盘涌出"
     else:
         vpa_signal = "中性"
         vpa_score = 10
-        vpa_detail = f"量价结构平衡：当前量比{vol_ratio:.2f}，处于正常范围"
+        vpa_detail = f"量比{vol_ratio:.2f}处于正常区间"
 
-    # ========== 第三步：RSI强弱判断 ==========
-    if 40 < rsi < 75:
+    # RSI + 趋势结合调整
+    if trend_desc in ["强势多头", "多头初期"]:
+        overbought = 80
+        oversold = 30
+    else:
+        overbought = 70
+        oversold = 40
+
+    if oversold < rsi < overbought:
         rsi_status = "适度强势"
         rsi_score = 15
-        rsi_detail = f"RSI为{rsi:.1f}，处于40-75的健康区间，表示适度强势"
-    elif rsi >= 75:
-        rsi_status = "严重超买"
+        rsi_detail = f"RSI={rsi:.1f}，处于{oversold}-{overbought}健康区间"
+    elif rsi >= overbought:
+        rsi_status = "超买预警"
         rsi_score = 5
-        rsi_detail = f"RSI为{rsi:.1f}，超过75，处于超买状态，有回调风险"
-    elif rsi <= 40:
-        rsi_status = "严重超卖"
+        rsi_detail = f"RSI={rsi:.1f}，超过{overbought}，短期过热"
+    elif rsi <= oversold:
+        rsi_status = "超卖反弹"
         rsi_score = 5
-        rsi_detail = f"RSI为{rsi:.1f}，低于40，处于超卖状态，可能反弹"
+        rsi_detail = f"RSI={rsi:.1f}，低于{oversold}，超卖可能反弹"
     else:
         rsi_status = "中性"
         rsi_score = 10
-        rsi_detail = f"RSI为{rsi:.1f}，处于中性区间"
 
-    # ========== 第四步：资金流向判断 ==========
-    obv_val = latest.get("OBV", 0)
-    obv_ma = latest.get("OBV_MA20", 0)
-
-    if obv_val > obv_ma:
-        obv_status = "资金持续流入"
-        obv_score = 15
-        obv_detail = f"OBV({obv_val:.0f}) > OBV_MA20({obv_ma:.0f})，资金呈净流入"
+    # 资金流向（CMF + OBV背离）
+    if cmf > 0.1:
+        money_status = "资金持续流入"
+        money_score = 15
+        money_detail = f"CMF={cmf:.2f}>0.1，显示资金积极介入"
+    elif cmf < -0.1:
+        money_status = "资金持续流出"
+        money_score = 0
+        money_detail = f"CMF={cmf:.2f}<-0.1，资金撤离"
     else:
-        obv_status = "资金处于流出"
-        obv_score = 5
-        obv_detail = f"OBV({obv_val:.0f}) < OBV_MA20({obv_ma:.0f})，资金呈净流出"
+        money_status = "资金平衡"
+        money_score = 8
+        money_detail = f"CMF={cmf:.2f}，资金博弈均衡"
 
-    # ========== 综合评分 ==========
-    total_score = trend_score + vpa_score + rsi_score + obv_score
+    # OBV背离
+    obv_div = detect_obv_divergence(df)
+    if obv_div == "顶背离":
+        money_score -= 5
+        money_detail += "；⚠️ OBV顶背离，警惕反转"
+    elif obv_div == "底背离":
+        money_score += 5
+        money_detail += "；✅ OBV底背离，潜在买点"
 
-    # ========== 操作建议与风控 ==========
+    # 综合评分
+    total_score = trend_score + vpa_score + rsi_score + money_score
+
+    # 关键支撑/阻力位
+    support, resistance = find_support_resistance(df)
+
+    # 止损：取支撑位下方一点，或基于ATR的止损，取两者中较紧的
     atr = latest.get("ATR", price * 0.02)
+    stop_loss_from_support = support * 0.98
+    stop_loss_from_atr = price - 2 * atr
+    stop_loss = max(stop_loss_from_support, stop_loss_from_atr)  # 取较高的止损（更紧）
+    take_profit = resistance * 0.98 if resistance > price else price + 3 * atr  # 阻力位或ATR目标
 
-    if trend_desc in ["强力多头", "多头初期"]:
-        stop_loss = max(ma20 * 0.98, price - 2 * atr)
-        take_profit = price + 3 * atr
-        if vpa_signal == "放量进攻":
-            status = "🔥 趋势共振爆发"
-            advice = "多头排列+放量突破。老练交易员在此刻会果断持有，关注量能持续性。"
-            action_color = "success"
-        elif vpa_signal == "良性回踩":
-            status = "🧼 缩量洗盘支撑"
-            advice = "趋势向上中的缩量调整，只要不跌破20日线，是理想的逢低布局机会。"
-            action_color = "success"
-        else:
-            status = "📈 趋势持仓期"
-            advice = "趋势稳健，建议以20日线作为移动止损线继续持股。"
-            action_color = "success"
-    elif trend_desc == "空头趋势":
-        resistance = min(ma20 * 1.02, price + 2 * atr)
-        stop_loss = price - 1.5 * atr
-        take_profit = resistance
-        status = "❄️ 弱势观望"
-        advice = "处于下降通道，上方压力重重。严格执行交易纪律，保持空仓。"
-        action_color = "error"
-    else:
-        stop_loss = price - 2 * atr
-        take_profit = price + 2 * atr
-        status = "🔄 震荡选择期"
-        advice = "多空博弈激烈，方向不明。建议轻仓短线，或等待放量突破。"
+    # 盈亏比
+    risk = price - stop_loss
+    reward = take_profit - price
+    risk_reward = reward / risk if risk > 0 else 0
+
+    # 仓位建议（假设账户风险2%）
+    position_size_pct = 0.02 / (risk / price) if risk > 0 else 0
+    position_size_pct = min(position_size_pct, 0.5)  # 单票不超过50%仓位
+
+    # 操作建议
+    if total_score >= 60:
+        status = "🔥 强力做多"
+        advice = f"各项指标共振，建议买入/加仓。仓位建议：{position_size_pct:.0%}。"
+        action_color = "success"
+    elif total_score >= 40:
+        status = "📈 谨慎看多"
+        advice = f"趋势向好但需观察量能，可轻仓参与。仓位建议：{position_size_pct:.0%}。"
         action_color = "info"
-
-    change = (price - prev["Close"]) / prev["Close"] * 100
+    elif total_score >= 20:
+        status = "🔄 震荡观望"
+        advice = "方向不明，建议等待明确信号。"
+        action_color = "warning"
+    else:
+        status = "❄️ 空头回避"
+        advice = "空头排列，资金流出，建议空仓。"
+        action_color = "error"
 
     return {
-        # 基础数据
         "price": price,
-        "change": change,
+        "change": (price - prev["Close"]) / prev["Close"] * 100,
         "trend": trend_desc,
+        "trend_strength": trend_strength,
         "vpa": vpa_signal,
         "status": status,
         "advice": advice,
         "action_color": action_color,
         "rsi": rsi,
         "vol_ratio": vol_ratio,
+        "adx": adx,
+        "cmf": cmf,
+        "obv_div": obv_div,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
-
-        # 详细推导数据
-        "trend_analysis": trend_analysis,
+        "support": support,
+        "resistance": resistance,
+        "risk_reward": risk_reward,
+        "position_size": position_size_pct,
+        # 详细分解
         "trend_score": trend_score,
         "vpa_score": vpa_score,
         "rsi_score": rsi_score,
-        "obv_score": obv_score,
+        "money_score": money_score,
         "total_score": total_score,
-
-        # 均线数据
         "ma5": ma5, "ma10": ma10, "ma20": ma20, "ma60": ma60, "ma120": ma120,
-
-        # 详细说明
         "vpa_detail": vpa_detail,
-        "rsi_status": rsi_status,
         "rsi_detail": rsi_detail,
-        "obv_status": obv_status,
-        "obv_detail": obv_detail,
-
-        # 历史对比
-        "vol_ratio_prev5": vol_ratio_prev5,
+        "money_detail": money_detail,
         "atr": atr,
     }
 
-
-# =========================
-# 评分引擎
-# =========================
 def get_score(df):
-    if df is None or len(df) < 20: return 0
-    df = add_advanced_indicators(df)
+    """快速评分（供多周期加权）"""
+    if df is None or len(df) < 20:
+        return 0
     latest = df.iloc[-1]
-    prev = df.iloc[-2]
     score = 0
-
-    ma20 = latest.get("MA20", 0)
-    ma60 = latest.get("MA60", 0)
-    ma5 = latest.get("MA5", 0)
-    ma10 = latest.get("MA10", 0)
-
-    if latest["Close"] > ma20: score += 15
-    if ma20 > ma60: score += 15
-    if ma5 > ma10: score += 10
-    if latest.get("Vol_Ratio", 0) > 1.2: score += 15
+    # 趋势
+    if latest["Close"] > latest.get("MA20", 0): score += 15
+    if latest.get("MA20", 0) > latest.get("MA60", 0): score += 15
+    if latest.get("MA5", 0) > latest.get("MA10", 0): score += 10
+    # 量能
+    vol_ratio = latest.get("Vol_Ratio", 1)
+    vol_high = latest.get("Vol_Ratio_Threshold_High", 1.5)
+    if vol_ratio > vol_high: score += 15
+    # 资金
     if latest.get("OBV", 0) > latest.get("OBV_MA20", 0): score += 15
+    # RSI
     rsi = latest.get("RSI", 50)
     if 40 < rsi < 75: score += 15
-    if latest["Close"] > prev["Close"]: score += 15
-
+    # 涨跌
+    if latest["Close"] > df.iloc[-2]["Close"]: score += 15
     return score
 
-
 # =========================
-# 侧边栏
+# 主界面
 # =========================
-st.sidebar.header("🛠️ 交易控制台")
-ticker_input = st.sidebar.text_input("输入标的代码 (如 000001, AAPL)", "000001")
-period_select = st.sidebar.selectbox("回测周期 (显示长度)", ["1y", "2y", "5y"], index=0)
-
 if st.sidebar.button("执行深度洞察"):
     with st.spinner("正在解析市场微观结构..."):
         stock_name = get_stock_info(ticker_input)
@@ -341,27 +454,25 @@ if st.sidebar.button("执行深度洞察"):
         df_w_raw = get_data(ticker_input, "5y", "1wk")
         df_h_raw = get_data(ticker_input, "1mo", "60m")
 
-    if df_d_raw is not None and len(df_d_raw) > 5:
+    if df_d_raw is not None and len(df_d_raw) > 60:
         df_d = add_advanced_indicators(df_d_raw)
         analysis = detailed_analysis(df_d)
 
         if analysis:
-            # --- 第一部分：核心价格面板 ---
+            # 头部信息
             st.markdown(f'<div class="stock-name">{stock_name} ({ticker_input})</div>', unsafe_allow_html=True)
             col_p1, col_p2 = st.columns([2, 3])
             with col_p1:
-                # 修复：中国A股市场红涨绿跌
                 color = "#16a34a" if analysis['change'] < 0 else "#dc2626"
                 st.markdown(
                     f'<div class="price-tag">¥{analysis["price"]:.2f} <span style="font-size:1.5rem; color:{color};">{analysis["change"]:+.2f}%</span></div>',
                     unsafe_allow_html=True)
 
-            # --- 第二部分：核心指标 ---
-            st.markdown('<div class="section-title">📊 核心分析报告</div>', unsafe_allow_html=True)
+            # 多周期评分
             score_d = get_score(df_d)
-            score_w = get_score(df_w_raw)
-            score_h = get_score(df_h_raw)
-            avg_score = (score_d * 0.5 + score_w * 0.3 + score_h * 0.2)
+            score_w = get_score(df_w_raw) if df_w_raw is not None else 0
+            score_h = get_score(df_h_raw) if df_h_raw is not None else 0
+            avg_score = w_d * score_d + w_w * score_w + w_h * score_h
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("综合操盘评分", f"{avg_score:.1f}", delta=f"{score_d - 50:.1f}")
@@ -378,164 +489,109 @@ if st.sidebar.button("执行深度洞察"):
             else:
                 st.info(f"**【操盘建议】** {analysis['status']} —— {analysis['advice']}")
 
-            # --- 第三部分：决策推导面板 ---
+            # 决策推导面板
             st.markdown('<div class="section-title">🔍 决策推导过程</div>', unsafe_allow_html=True)
 
-            # 趋势判断推导
-            with st.expander("📈 **第一步：趋势判断** - 从均线排列看方向", expanded=True):
+            # 趋势判断
+            with st.expander("📈 **第一步：趋势判断（均线+ADX）**", expanded=True):
                 col_t1, col_t2 = st.columns(2)
                 with col_t1:
-                    st.write("**均线排列对标：**")
+                    st.write("**均线排列**")
                     st.markdown(f"""
-- MA5 = ¥{analysis['ma5']:.2f}
-- MA10 = ¥{analysis['ma10']:.2f}
-- MA20 = ¥{analysis['ma20']:.2f}
-- MA60 = ¥{analysis['ma60']:.2f}
-- 当前价 = ¥{analysis['price']:.2f}
+- MA5: {analysis['ma5']:.2f}
+- MA10: {analysis['ma10']:.2f}
+- MA20: {analysis['ma20']:.2f}
+- MA60: {analysis['ma60']:.2f}
+- 当前价: {analysis['price']:.2f}
                     """)
                 with col_t2:
-                    st.write("**判断逻辑：**")
-                    checks = []
-                    if analysis['trend_analysis']['ma5_vs_ma10']:
-                        checks.append("✓ MA5 > MA10（短期向上）")
-                    else:
-                        checks.append("✗ MA5 < MA10（短期向下）")
-                    if analysis['trend_analysis']['ma10_vs_ma20']:
-                        checks.append("✓ MA10 > MA20（中期向上）")
-                    else:
-                        checks.append("✗ MA10 < MA20（中期向下）")
-                    if analysis['trend_analysis']['ma20_vs_ma60']:
-                        checks.append("✓ MA20 > MA60（长期向上）")
-                    else:
-                        checks.append("✗ MA20 < MA60（长期向下）")
-                    if analysis['trend_analysis']['price_vs_ma20']:
-                        checks.append("✓ 价格 > MA20（站上支撑）")
-                    else:
-                        checks.append("✗ 价格 < MA20（跌破支撑）")
-                    for check in checks:
-                        st.write(check)
+                    st.write("**趋势强度**")
+                    st.markdown(f"""
+- ADX: {analysis['adx']:.1f} (>25为强趋势)
+- +DI: {df_d['+DI'].iloc[-1]:.1f}
+- -DI: {df_d['-DI'].iloc[-1]:.1f}
+- 结论: {analysis['trend_strength']} {analysis['trend']}
+- 得分: {analysis['trend_score']}/30
+                    """)
 
-                st.markdown(f"**结论：{analysis['trend']}** (得分: {analysis['trend_score']}/25分)")
-
-            # 量价结构推导
-            with st.expander("💹 **第二步：量价结构** - 从成交量看强弱", expanded=True):
+            # 量价结构
+            with st.expander("💹 **第二步：量价结构（动态阈值）**", expanded=True):
                 col_v1, col_v2 = st.columns(2)
                 with col_v1:
-                    st.write("**量能数据对标：**")
-                    st.markdown(f"""
-- 当前量比 = {analysis['vol_ratio']:.2f}
-- 近5日平均量比 = {analysis['vol_ratio_prev5']:.2f}
-- 判断标准：
-  - > 1.5 = 放量
-  - 0.8-1.5 = 正常
-  - < 0.8 = 缩量
-                    """)
+                    st.write(f"**量比: {analysis['vol_ratio']:.2f}**")
+                    st.write(f"动态上轨: {df_d['Vol_Ratio_Threshold_High'].iloc[-1]:.2f}")
+                    st.write(f"动态下轨: {df_d['Vol_Ratio_Threshold_Low'].iloc[-1]:.2f}")
                 with col_v2:
-                    st.write("**价量配合：**")
-                    st.markdown(f"""
-- 价格变化：{analysis['change']:+.2f}%
-- 量价信号：{analysis['vpa']}
-- 详细说明：{analysis['vpa_detail']}
-                    """)
+                    st.write(f"**信号**: {analysis['vpa']}")
+                    st.write(f"**详情**: {analysis['vpa_detail']}")
+                st.write(f"得分: {analysis['vpa_score']}/20")
 
-                st.markdown(f"**结论：{analysis['vpa']}** (得分: {analysis['vpa_score']}/20分)")
+            # RSI
+            with st.expander("📊 **第三步：RSI强弱（结合趋势）**", expanded=True):
+                st.write(f"RSI: {analysis['rsi']:.1f}")
+                st.write(f"详情: {analysis['rsi_detail']}")
+                st.write(f"得分: {analysis['rsi_score']}/15")
 
-            # RSI强弱推导
-            with st.expander("📊 **第三步：RSI强弱** - 从相对强弱指数看动能", expanded=True):
-                col_r1, col_r2 = st.columns(2)
-                with col_r1:
-                    st.write("**RSI数据：**")
-                    st.markdown(f"""
-- 当前RSI = {analysis['rsi']:.1f}
-- 判断标准：
-  - > 75 = 超买
-  - 40-75 = 健康
-  - < 40 = 超卖
-                    """)
-                with col_r2:
-                    st.write("**强弱判断：**")
-                    st.markdown(f"""
-- 状态：{analysis['rsi_status']}
-- 说明：{analysis['rsi_detail']}
-                    """)
-
-                st.markdown(f"**结论：{analysis['rsi_status']}** (得分: {analysis['rsi_score']}/15分)")
-
-            # 资金流向推导
-            with st.expander("💰 **第四步：资金流向** - 从OBV看主力意图", expanded=True):
-                st.write("**资金流向分析：**")
-                st.markdown(f"""
-- {analysis['obv_detail']}
-- **含义**：如果股价下跌但资金流入，可能存在"主力吸筹"现象
-- **结论**：{analysis['obv_status']} (得分: {analysis['obv_score']}/15分)
-                """)
+            # 资金流向
+            with st.expander("💰 **第四步：资金流向（CMF+OBV背离）**", expanded=True):
+                st.write(f"CMF: {analysis['cmf']:.3f} ( >0.1流入，<-0.1流出 )")
+                st.write(f"OBV背离: {analysis['obv_div']}")
+                st.write(f"详情: {analysis['money_detail']}")
+                st.write(f"得分: {analysis['money_score']}/15")
 
             # 综合评分
             st.markdown('<div class="section-title">🎯 综合评分</div>', unsafe_allow_html=True)
-            col_score1, col_score2, col_score3, col_score4, col_score5 = st.columns(5)
-            with col_score1:
-                st.metric("趋势得分", f"{analysis['trend_score']}/25")
-            with col_score2:
-                st.metric("量价得分", f"{analysis['vpa_score']}/20")
-            with col_score3:
-                st.metric("RSI得分", f"{analysis['rsi_score']}/15")
-            with col_score4:
-                st.metric("资金得分", f"{analysis['obv_score']}/15")
-            with col_score5:
-                st.metric("总得分", f"{analysis['total_score']}/75")
+            col_score = st.columns(5)
+            col_score[0].metric("趋势得分", f"{analysis['trend_score']}/30")
+            col_score[1].metric("量价得分", f"{analysis['vpa_score']}/20")
+            col_score[2].metric("RSI得分", f"{analysis['rsi_score']}/15")
+            col_score[3].metric("资金得分", f"{analysis['money_score']}/15")
+            col_score[4].metric("总得分", f"{analysis['total_score']}/80")
+            st.info(f"**评分说明**：总分{analysis['total_score']}/80，≥60强力做多，40-60谨慎看多，20-40震荡观望，<20空头回避。")
 
-            st.info(
-                f"**综合评分说明**：总分{analysis['total_score']}分。得分越高，多头信号越强。得分<30分建议观望，30-50分可轻仓参与，>50分可积极参与。")
+            # 风控与仓位
+            st.markdown('<div class="section-title">🛡️ 交易计划与风控</div>', unsafe_allow_html=True)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("止损位", f"¥{analysis['stop_loss']:.2f}")
+            c2.metric("目标位", f"¥{analysis['take_profit']:.2f}")
+            c3.metric("盈亏比", f"{analysis['risk_reward']:.2f}")
+            c4.metric("建议仓位", f"{analysis['position_size']:.0%}")
+            with st.expander("📋 **风控计算详解**"):
+                st.markdown(f"""
+**支撑/阻力识别**：
+- 关键支撑: ¥{analysis['support']:.2f}
+- 关键阻力: ¥{analysis['resistance']:.2f}
 
-            # --- 第四部分：老手洞察 ---
+**止损设定**：
+- 基于支撑: {analysis['support']*0.98:.2f}
+- 基于ATR: {analysis['price'] - 2*analysis['atr']:.2f}
+- 最终取两者较高（更紧）: **¥{analysis['stop_loss']:.2f}**
+
+**仓位计算**：
+- 单笔风险 = 账户资金 × 2%
+- 建议仓位 = 2% / (止损幅度) = {analysis['position_size']:.0%}
+            """)
+
+            # 老手洞察
             st.markdown('<div class="section-title">🕵️ 老手洞察 (Trader\'s Insight)</div>', unsafe_allow_html=True)
             col_in1, col_in2 = st.columns(2)
             with col_in1:
-                st.write("**筹码稳定性：**")
-                v_avg = df_d["Vol_Ratio"].tail(5).mean()
-                vol_trend = "温和放量" if v_avg > 1.2 else "缩量洗盘" if v_avg < 0.8 else "存量博弈"
-                st.write(f"近5日表现：**{vol_trend}**。老手会观察地量是否出现，那往往是变盘前奏。")
+                # 筹码稳定性模拟
+                vol_trend = "温和放量" if df_d["Vol_Ratio"].tail(5).mean() > 1.2 else "缩量洗盘" if df_d["Vol_Ratio"].tail(5).mean() < 0.8 else "存量博弈"
+                st.write(f"**量能趋势**: {vol_trend}")
+                st.write("地量往往意味着变盘前兆，当前量能水平需关注后续变化。")
             with col_in2:
-                st.write("**资金动向：**")
-                obv_val = df_d["OBV"].iloc[-1]
-                obv_ma = df_d["OBV_MA20"].iloc[-1]
-                obv_status = "资金持续流入" if obv_val > obv_ma else "资金处于流出"
-                st.write(f"OBV指标显示：**{obv_status}**。如果股价下跌但资金流入，可能存在'主力吸筹'。")
+                st.write("**主力意图**")
+                if analysis['cmf'] > 0.1 and analysis['trend'] in ["强势多头","多头初期"]:
+                    st.write("✅ CMF持续流入+趋势向上，主力可能正在吸筹/拉升。")
+                elif analysis['cmf'] < -0.1 and analysis['trend'] == "空头趋势":
+                    st.write("⚠️ 资金流出+空头趋势，主力派发迹象明显，规避。")
+                elif analysis['obv_div'] == "底背离" and analysis['trend'] == "震荡筑底":
+                    st.write("🔍 OBV底背离，暗示下跌末端，可关注底部反转。")
+                else:
+                    st.write("资金行为不明确，等待更清晰信号。")
 
-            # --- 第五部分：风控预案 ---
-            st.markdown('<div class="section-title">🛡️ 交易计划预案</div>', unsafe_allow_html=True)
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("防守位 (止损)", f"¥{analysis['stop_loss']:.2f}")
-                st.caption("基于20日均线与波动率(ATR)动态计算")
-            with c2:
-                st.metric("攻击位 (目标)", f"¥{analysis['take_profit']:.2f}")
-                st.caption("基于预期波动率的目标位")
-            with c3:
-                current_p = analysis['price']
-                risk_reward = (analysis['take_profit'] - current_p) / (
-                    max(0.01, abs(current_p - analysis['stop_loss'])))
-                st.metric("盈亏比预期", f"{risk_reward:.2f}")
-                st.caption("建议盈亏比 > 1.5 时参与")
-
-            # 风控计算过程
-            with st.expander("📋 **风控计算详解**"):
-                st.markdown(f"""
-**止损位计算：**
-- 基础值1：MA20 × 0.98 = {analysis['ma20']:.2f} × 0.98 = {analysis['ma20'] * 0.98:.2f}
-- 基础值2：当前价 - 2×ATR = {analysis['price']:.2f} - 2×{analysis['atr']:.2f} = {analysis['price'] - 2 * analysis['atr']:.2f}
-- 最终止损 = MAX(两个值) = **¥{analysis['stop_loss']:.2f}**
-
-**止盈位计算：**
-- 当前价 + 3×ATR = {analysis['price']:.2f} + 3×{analysis['atr']:.2f} = **¥{analysis['take_profit']:.2f}**
-
-**盈亏比计算：**
-- 盈利空间 = {analysis['take_profit']:.2f} - {analysis['price']:.2f} = {analysis['take_profit'] - analysis['price']:.2f}
-- 亏损空间 = {analysis['price']:.2f} - {analysis['stop_loss']:.2f} = {analysis['price'] - analysis['stop_loss']:.2f}
-- 盈亏比 = 盈利空间 / 亏损空间 = **{risk_reward:.2f}**
-                """)
-
-            # --- 第六部分：图表 ---
+            # 图表
             st.markdown('<div class="section-title">📈 量价图谱</div>', unsafe_allow_html=True)
             days_map = {"1y": 252, "2y": 504, "5y": 1260}
             display_df = df_d.tail(days_map.get(period_select, 252))
@@ -544,22 +600,16 @@ if st.sidebar.button("执行深度洞察"):
             fig.add_trace(go.Candlestick(x=display_df.index, open=display_df["Open"], high=display_df["High"],
                                          low=display_df["Low"], close=display_df["Close"], name="K线"), row=1, col=1)
             for ma, color in zip(["MA5", "MA20", "MA60"], ["#6366f1", "#f59e0b", "#10b981"]):
-                fig.add_trace(
-                    go.Scatter(x=display_df.index, y=display_df[ma], name=ma, line=dict(width=1.5, color=color)), row=1,
-                    col=1)
+                fig.add_trace(go.Scatter(x=display_df.index, y=display_df[ma], name=ma, line=dict(width=1.5, color=color)), row=1, col=1)
 
-            v_colors = ['#dc2626' if display_df.iloc[i]['Close'] >= display_df.iloc[i]['Open'] else '#16a34a' for i in
-                        range(len(display_df))]
-            fig.add_trace(go.Bar(x=display_df.index, y=display_df["Volume"], name="成交量", marker_color=v_colors),
-                          row=2, col=1)
-            fig.add_trace(
-                go.Scatter(x=display_df.index, y=display_df["VOL_MA20"], name="量均线", line=dict(color="#f59e0b")),
-                row=2, col=1)
+            v_colors = ['#dc2626' if display_df.iloc[i]['Close'] >= display_df.iloc[i]['Open'] else '#16a34a' for i in range(len(display_df))]
+            fig.add_trace(go.Bar(x=display_df.index, y=display_df["Volume"], name="成交量", marker_color=v_colors), row=2, col=1)
+            fig.add_trace(go.Scatter(x=display_df.index, y=display_df["VOL_MA20"], name="量均线", line=dict(color="#f59e0b")), row=2, col=1)
 
             fig.update_layout(height=800, template="plotly_white", showlegend=True, xaxis_rangeslider_visible=False,
                               margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("未能加载有效数据，请检查代码。")
+        st.warning("数据不足（至少需要60个交易日），请尝试其他标的或稍后再试。")
 else:
     st.info("👈 在左侧控制台输入代码开始分析。")
