@@ -1,649 +1,799 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
+# -*- coding: utf-8 -*-
+import os
 import re
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import openai
-import os
+import streamlit as st
+import yfinance as yf
+from openai import OpenAI
 
 # =========================
-# 从环境变量读取默认配置（用于部署）
+# 常量
 # =========================
-DEFAULT_API_KEY = os.getenv("AI_API_KEY", "")
-DEFAULT_BASE_URL = os.getenv("AI_BASE_URL", "https://aihubmix.com/v1")
-DEFAULT_MODEL = os.getenv("AI_MODEL", "deepseek-v3.2")
-
-# =========================
-# 页面配置与专业UI
-# =========================
-st.set_page_config(layout="wide", page_title="交易员：量价趋势洞察系统 (Pro)")
-
-st.markdown("""
-    <style>
-    .main { background-color: #f0f2f6; color: #1e293b; }
-    .stMetric { background-color: #ffffff; border: 1px solid #e2e8f0; padding: 15px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .stAlert { border-radius: 8px; }
-    .trader-insight { background-color: #f8fafc; border-left: 5px solid #3b82f6; padding: 20px; margin: 15px 0; border-radius: 0 10px 10px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .section-title { color: #1e40af; font-weight: bold; margin-top: 20px; border-bottom: 2px solid #e2e8f0; padding-bottom: 5px; }
-    .price-tag { font-size: 2.5rem; font-weight: 800; color: #1e293b; }
-    .stock-name { font-size: 1.2rem; color: #64748b; margin-bottom: 10px; }
-    .decision-box { background-color: #fef3c7; border-left: 5px solid #f59e0b; padding: 15px; margin: 10px 0; border-radius: 0 8px 8px 0; }
-    .data-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #e2e8f0; }
-    .data-label { font-weight: 600; color: #475569; }
-    .data-value { color: #1e293b; font-weight: 500; }
-    .positive { color: #dc2626; }
-    .negative { color: #16a34a; }
-    .tooltip { border-bottom: 1px dotted #999; cursor: help; }
-    </style>
-    """, unsafe_allow_html=True)
-
-st.title("🦅 老练交易员：量价趋势洞察系统 (Pro)")
-st.markdown("""
-本系统模拟职业交易员的深度决策逻辑，动态分析趋势、量价、资金流向、技术形态及背离信号，并结合AI给出实战建议。
-> **核心原则**：趋势定方向，量价定强弱，结构定买卖，风控定仓位。
-""")
+PERIOD_DAYS = {
+    "1mo": 30,
+    "3mo": 90,
+    "6mo": 180,
+    "1y": 252,
+    "2y": 504,
+    "5y": 1260,
+}
+NEW_TOKEN_MODEL_PREFIX = ("gpt-5", "gpt-4.1", "o3", "o4")
 
 # =========================
-# 侧边栏控制台
+# 页面配置
 # =========================
-st.sidebar.header("🛠️ 交易控制台")
-ticker_input = st.sidebar.text_input("输入标的代码 (如 000001, AAPL)", "000001")
-period_select = st.sidebar.selectbox("回测周期 (显示长度)", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=3)
+st.set_page_config(layout="wide", page_title="老练交易员：量价趋势洞察系统 Pro")
 
-# 多周期权重调节
-st.sidebar.subheader("📊 多周期权重")
-w_d = st.sidebar.slider("日线权重", 0.0, 1.0, 0.5, 0.05)
-w_w = st.sidebar.slider("周线权重", 0.0, 1.0, 0.3, 0.05)
-w_h = st.sidebar.slider("小时线权重", 0.0, 1.0, 0.2, 0.05)
-# 归一化
-total = w_d + w_w + w_h
-if total > 0:
-    w_d /= total
-    w_w /= total
-    w_h /= total
+st.markdown(
+    """
+<style>
+    .main {
+        background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+        color: #0f172a;
+    }
+    .block-container {
+        padding-top: 1.2rem;
+        padding-bottom: 1.2rem;
+    }
+    .card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 14px 16px;
+        box-shadow: 0 2px 6px rgba(15,23,42,0.05);
+    }
+    .stock-name {
+        font-size: 1.15rem;
+        color: #475569;
+        margin-bottom: 6px;
+    }
+    .price-tag {
+        font-size: 2.35rem;
+        font-weight: 800;
+        line-height: 1.1;
+        color: #0f172a;
+    }
+    .section-title {
+        color: #1e3a8a;
+        font-weight: 700;
+        margin: 8px 0 6px 0;
+        border-bottom: 2px solid #e2e8f0;
+        padding-bottom: 4px;
+    }
+    .chat-wrap {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 10px 12px;
+        box-shadow: 0 2px 6px rgba(15,23,42,0.05);
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
-# AI 分析开关
-st.sidebar.subheader("🤖 AI 智能分析")
-enable_ai = st.sidebar.checkbox("启用AI深度分析 (deepseek-v3.2)", value=False)
-if enable_ai:
-    # 使用环境变量默认值填充输入框，但允许用户修改
-    ai_api_key = st.sidebar.text_input("AIHubMix API Key", type="password", value=DEFAULT_API_KEY)
-    ai_base_url = st.sidebar.text_input("API Base URL", value=DEFAULT_BASE_URL)
-    # 模型选择：根据环境变量默认值设置索引
-    model_options = ["deepseek-v3.2", "gpt-4", "claude-3-opus", "gemini-pro"]
-    default_index = model_options.index(DEFAULT_MODEL) if DEFAULT_MODEL in model_options else 0
-    ai_model = st.sidebar.selectbox("选择模型", model_options, index=default_index)
-
-# 帮助文档折叠
-with st.sidebar.expander("📖 使用帮助"):
-    st.markdown("""
-    **指标说明**  
-    - **均线**: 趋势方向，多头排列(MA5>MA10>MA20)看涨  
-    - **MACD**: 快慢线金叉/死叉判断多空  
-    - **RSI**: >70超买，<30超卖  
-    - **乖离率**: 股价偏离均线程度，过大易回归  
-    - **CMF**: 资金流向，>0.1流入，<-0.1流出  
-    - **MFI**: 资金流量指数，>70超买，<30超卖  
-    - **OBV背离**: 价格与量能不一致时预示反转  
-    - **K线形态**: 锤头线、吞没形态等反转信号  
-    - **价格形态**: 箱体、三角形、旗形整理  
-    - **止损**: 基于关键支撑和ATR动态计算  
-    """)
+st.title("🦅 老练交易员：量价趋势洞察系统 Pro")
+st.caption("核心原则：趋势定方向，量价定强弱，结构定买卖，风控定仓位。")
 
 # =========================
 # 工具函数
 # =========================
-def normalize_ticker(ticker):
-    ticker = ticker.strip().upper()
-    if re.match(r"^\d{6}$", ticker):
-        if ticker.startswith(("60", "68")):
-            return ticker + ".SS"
-        elif ticker.startswith(("00", "30")):
-            return ticker + ".SZ"
-    return ticker
+def is_a_share_code(ticker: str) -> bool:
+    return bool(re.fullmatch(r"\d{6}", ticker.strip().upper()))
 
-@st.cache_data(ttl=86400)
-def get_stock_info(ticker):
-    try:
-        t = yf.Ticker(normalize_ticker(ticker))
-        info = t.info
-        name = info.get('longName') or info.get('shortName') or ticker
-        pe = info.get('trailingPE')
-        pb = info.get('priceToBook')
-        return name, pe, pb
-    except:
-        return ticker, None, None
 
-@st.cache_data(ttl=3600)
-def get_data(ticker, period="1y", interval="1d"):
-    try:
-        ticker_norm = normalize_ticker(ticker)
-        df = yf.download(ticker_norm, period=period, interval=interval, progress=False)
-        if df.empty:
-            st.warning(f"未获取到数据，请检查代码 {ticker} 是否正确，或尝试其他周期。")
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        return df.dropna()
-    except Exception as e:
-        st.error(f"数据获取失败 ({ticker}): {e}")
+def normalize_ticker_for_yf(ticker: str) -> str:
+    t = ticker.strip().upper()
+    if is_a_share_code(t):
+        if t.startswith(("60", "68")):
+            return f"{t}.SS"
+        if t.startswith(("00", "30")):
+            return f"{t}.SZ"
+    return t
+
+
+def market_colors(ticker: str):
+    # A股：涨红跌绿；海外：涨绿跌红
+    if is_a_share_code(ticker):
+        return "#dc2626", "#16a34a"
+    return "#16a34a", "#dc2626"
+
+
+def use_max_completion_tokens(model: str) -> bool:
+    return isinstance(model, str) and model.startswith(NEW_TOKEN_MODEL_PREFIX)
+
+
+def standardize_ohlcv(df: pd.DataFrame):
+    if df is None or df.empty:
         return None
 
-# =========================
-# 高级指标计算
-# =========================
-def add_advanced_indicators(df):
-    if df is None or len(df) < 60:
-        return df
-    df = df.copy()
-    close = df["Close"]
-    high = df["High"]
-    low = df["Low"]
-    volume = df["Volume"]
+    out = df.copy()
 
-    # 均线
-    df["MA5"] = close.rolling(5).mean()
-    df["MA10"] = close.rolling(10).mean()
-    df["MA20"] = close.rolling(20).mean()
-    df["MA60"] = close.rolling(60).mean()
-    df["MA120"] = close.rolling(120).mean()
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = out.columns.get_level_values(0)
 
-    # 成交量均线
-    df["VOL_MA5"] = volume.rolling(5).mean()
-    df["VOL_MA10"] = volume.rolling(10).mean()
-    df["VOL_MA20"] = volume.rolling(20).mean()
-    df["Vol_Ratio"] = volume / df["VOL_MA20"].replace(0, np.nan)
+    rename_map = {
+        "日期": "Date",
+        "时间": "Date",
+        "开盘": "Open",
+        "最高": "High",
+        "最低": "Low",
+        "收盘": "Close",
+        "成交量": "Volume",
+        "成交量(股)": "Volume",
+        "成交量(手)": "Volume",
+    }
+    out.rename(columns=rename_map, inplace=True)
 
-    # 动态量比阈值（基于最近60日）
-    vol_ratio_series = df["Vol_Ratio"].dropna()
-    if len(vol_ratio_series) >= 60:
-        vol_mean = vol_ratio_series.tail(60).mean()
-        vol_std = vol_ratio_series.tail(60).std()
-        df["Vol_Ratio_Threshold_High"] = vol_mean + vol_std
-        df["Vol_Ratio_Threshold_Low"] = vol_mean - vol_std
+    if "Date" in out.columns:
+        out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+        out = out.set_index("Date")
+
+    if not isinstance(out.index, pd.DatetimeIndex):
+        try:
+            out.index = pd.to_datetime(out.index, errors="coerce")
+        except Exception:
+            return None
+
+    need_cols = ["Open", "High", "Low", "Close", "Volume"]
+    if any(c not in out.columns for c in need_cols):
+        return None
+
+    out = out[need_cols].copy()
+    for c in need_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    out = out.replace([np.inf, -np.inf], np.nan).dropna()
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+
+    if isinstance(out.index, pd.DatetimeIndex) and out.index.tz is not None:
+        out.index = out.index.tz_localize(None)
+
+    return out
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_stock_info(ticker: str, source: str = "yfinance"):
+    name = ticker.strip().upper()
+    pe = None
+    pb = None
+
+    if source == "akshare" and is_a_share_code(name):
+        try:
+            import akshare as ak
+
+            info_df = ak.stock_individual_info_em(symbol=name)
+            if not info_df.empty and {"item", "value"}.issubset(info_df.columns):
+                info_map = dict(zip(info_df["item"], info_df["value"]))
+                name = info_map.get("股票简称", name)
+        except Exception:
+            pass
+
+    try:
+        yf_ticker = yf.Ticker(normalize_ticker_for_yf(ticker))
+        info = yf_ticker.info or {}
+        name = info.get("longName") or info.get("shortName") or name
+        pe = info.get("trailingPE")
+        pb = info.get("priceToBook")
+    except Exception:
+        pass
+
+    return name, pe, pb
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_data_yfinance(ticker: str, period: str = "1y", interval: str = "1d"):
+    try:
+        t = normalize_ticker_for_yf(ticker)
+        raw = yf.download(
+            t,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+            prepost=False,
+            threads=False,
+        )
+        return standardize_ohlcv(raw)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_data_akshare(ticker: str, period: str = "1y", interval: str = "1d"):
+    import akshare as ak  # 可能抛 ImportError
+
+    code = ticker.strip().upper()
+    if not is_a_share_code(code):
+        return None
+
+    days = PERIOD_DAYS.get(period, 252)
+    now = datetime.now()
+
+    if interval in ("1d", "1wk"):
+        ak_period = "daily" if interval == "1d" else "weekly"
+        start_date = (now - timedelta(days=int(days * 2.2 + 80))).strftime("%Y%m%d")
+        end_date = now.strftime("%Y%m%d")
+
+        raw = ak.stock_zh_a_hist(
+            symbol=code,
+            period=ak_period,
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq",
+        )
+        if raw is None or raw.empty:
+            return None
+
+        raw = raw.rename(
+            columns={
+                "日期": "Date",
+                "开盘": "Open",
+                "最高": "High",
+                "最低": "Low",
+                "收盘": "Close",
+                "成交量": "Volume",
+            }
+        )
+        df = standardize_ohlcv(raw)
+        if df is None:
+            return None
+
+        if interval == "1d":
+            return df.tail(days + 40)
+
+        weekly_bars = max(int(days / 5) + 10, 52)
+        return df.tail(weekly_bars)
+
+    if interval == "60m":
+        start_dt = (now - timedelta(days=35)).strftime("%Y-%m-%d 09:30:00")
+        end_dt = now.strftime("%Y-%m-%d 15:00:00")
+        raw = ak.stock_zh_a_hist_min_em(
+            symbol=code,
+            period="60",
+            start_date=start_dt,
+            end_date=end_dt,
+            adjust="",  # 分钟线通常不复权更稳定
+        )
+        if raw is None or raw.empty:
+            return None
+
+        raw = raw.rename(
+            columns={
+                "时间": "Date",
+                "日期": "Date",
+                "开盘": "Open",
+                "最高": "High",
+                "最低": "Low",
+                "收盘": "Close",
+                "成交量": "Volume",
+            }
+        )
+        df = standardize_ohlcv(raw)
+        if df is None:
+            return None
+        return df.tail(320)
+
+    return None
+
+
+def get_data(ticker: str, period: str = "1y", interval: str = "1d", source: str = "yfinance"):
+    notes = []
+    df = None
+
+    if source == "akshare":
+        try:
+            df = get_data_akshare(ticker, period, interval)
+            if df is None or df.empty:
+                notes.append(f"akshare {interval} 无有效数据，已回退 yfinance。")
+                df = get_data_yfinance(ticker, period, interval)
+        except ImportError:
+            notes.append("akshare 未安装（pip install akshare），已回退 yfinance。")
+            df = get_data_yfinance(ticker, period, interval)
+        except Exception as e:
+            notes.append(f"akshare {interval} 获取失败：{e}，已回退 yfinance。")
+            df = get_data_yfinance(ticker, period, interval)
     else:
-        df["Vol_Ratio_Threshold_High"] = 1.5
-        df["Vol_Ratio_Threshold_Low"] = 0.8
+        df = get_data_yfinance(ticker, period, interval)
+        if df is None or df.empty:
+            notes.append(f"yfinance {interval} 无有效数据。")
 
-    # OBV
-    df['OBV'] = (np.sign(close.diff()) * volume).fillna(0).cumsum()
-    df['OBV_MA20'] = df['OBV'].rolling(20).mean()
+    if df is not None and len(df) > 0:
+        return df, notes
+    return None, notes
 
-    # RSI
+
+def resample_to_weekly(df_daily: pd.DataFrame):
+    if df_daily is None or df_daily.empty:
+        return None
+    w = (
+        df_daily.resample("W-FRI")
+        .agg(
+            {
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum",
+            }
+        )
+        .dropna()
+    )
+    return w
+
+
+def add_advanced_indicators(df: pd.DataFrame):
+    if df is None or len(df) < 20:
+        return df
+
+    out = df.copy()
+    close = out["Close"]
+    high = out["High"]
+    low = out["Low"]
+    volume = out["Volume"]
+
+    for w in [5, 10, 20, 60, 120]:
+        out[f"MA{w}"] = close.rolling(w, min_periods=max(2, w // 2)).mean()
+
+    for w in [5, 10, 20]:
+        out[f"VOL_MA{w}"] = volume.rolling(w, min_periods=max(2, w // 2)).mean()
+
+    out["Vol_Ratio"] = volume / out["VOL_MA20"].replace(0, np.nan)
+    vr_mean = out["Vol_Ratio"].rolling(60, min_periods=20).mean()
+    vr_std = out["Vol_Ratio"].rolling(60, min_periods=20).std()
+    out["Vol_Ratio_Threshold_High"] = (vr_mean + vr_std).fillna(1.5)
+    out["Vol_Ratio_Threshold_Low"] = (vr_mean - vr_std).fillna(0.8).clip(lower=0.3)
+
+    direction = np.sign(close.diff()).fillna(0)
+    out["OBV"] = (direction * volume).cumsum()
+    out["OBV_MA20"] = out["OBV"].rolling(20, min_periods=5).mean()
+
     delta = close.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    df["RSI"] = 100 - (100 / (1 + rs))
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    avg_up = up.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    avg_down = down.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    rs = avg_up / avg_down.replace(0, np.nan)
+    out["RSI"] = (100 - 100 / (1 + rs)).clip(0, 100)
 
-    # 乖离率 BIAS
-    df["BIAS"] = (close - df["MA20"]) / df["MA20"] * 100
+    out["BIAS"] = (close - out["MA20"]) / out["MA20"] * 100
 
-    # ATR
-    high_low = high - low
-    high_prev_close = np.abs(high - close.shift())
-    low_prev_close = np.abs(low - close.shift())
-    tr = pd.concat([high_low, high_prev_close, low_prev_close], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
+    tr = pd.concat(
+        [(high - low).abs(), (high - close.shift()).abs(), (low - close.shift()).abs()],
+        axis=1,
+    ).max(axis=1)
+    out["ATR"] = tr.rolling(14, min_periods=5).mean()
 
-    # ADX
-    plus_dm = high.diff()
-    minus_dm = low.diff()
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm > 0] = 0
-    minus_dm = abs(minus_dm)
-    atr_14 = df["ATR"]
-    plus_di = 100 * (plus_dm.rolling(14).mean() / atr_14)
-    minus_di = 100 * (minus_dm.rolling(14).mean() / atr_14)
-    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    df["ADX"] = dx.rolling(14).mean()
-    df["+DI"] = plus_di
-    df["-DI"] = minus_di
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
 
-    # CMF
+    tr14 = tr.rolling(14, min_periods=5).sum().replace(0, np.nan)
+    plus_di = 100 * pd.Series(plus_dm, index=out.index).rolling(14, min_periods=5).sum() / tr14
+    minus_di = 100 * pd.Series(minus_dm, index=out.index).rolling(14, min_periods=5).sum() / tr14
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)) * 100
+
+    out["+DI"] = plus_di
+    out["-DI"] = minus_di
+    out["ADX"] = dx.rolling(14, min_periods=5).mean()
+
     mf_mult = ((close - low) - (high - close)) / (high - low).replace(0, np.nan)
-    mf_volume = mf_mult * volume
-    df["CMF"] = mf_volume.rolling(20).sum() / volume.rolling(20).sum()
+    mf_vol = mf_mult * volume
+    out["CMF"] = (
+        mf_vol.rolling(20, min_periods=5).sum()
+        / volume.rolling(20, min_periods=5).sum().replace(0, np.nan)
+    )
 
-    # MFI
-    typical_price = (high + low + close) / 3
-    money_flow = typical_price * volume
-    positive_flow = money_flow.where(typical_price > typical_price.shift(1), 0).rolling(14).sum()
-    negative_flow = money_flow.where(typical_price < typical_price.shift(1), 0).rolling(14).sum()
-    mfi_ratio = positive_flow / negative_flow.replace(0, np.nan)
-    df["MFI"] = 100 - (100 / (1 + mfi_ratio))
+    tp = (high + low + close) / 3
+    money_flow = tp * volume
+    pos_flow = money_flow.where(tp > tp.shift(1), 0.0)
+    neg_flow = money_flow.where(tp < tp.shift(1), 0.0).abs()
+    pos_sum = pos_flow.rolling(14, min_periods=5).sum()
+    neg_sum = neg_flow.rolling(14, min_periods=5).sum()
+    mfi_ratio = pos_sum / neg_sum.replace(0, np.nan)
+    out["MFI"] = (100 - 100 / (1 + mfi_ratio)).clip(0, 100)
 
-    # MACD
-    exp1 = close.ewm(span=12, adjust=False).mean()
-    exp2 = close.ewm(span=26, adjust=False).mean()
-    df["MACD"] = exp1 - exp2
-    df["MACD_signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
-    df["MACD_hist"] = df["MACD"] - df["MACD_signal"]
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    out["MACD"] = ema12 - ema26
+    out["MACD_signal"] = out["MACD"].ewm(span=9, adjust=False).mean()
+    out["MACD_hist"] = out["MACD"] - out["MACD_signal"]
 
-    return df
+    out.replace([np.inf, -np.inf], np.nan, inplace=True)
+    return out
 
-# =========================
-# 关键支撑/阻力位识别
-# =========================
-def find_support_resistance(df, lookback=50):
+
+def find_support_resistance(df: pd.DataFrame, lookback: int = 80):
     recent = df.tail(lookback)
     highs = recent["High"]
-    resistance_candidates = []
-    for i in range(5, len(highs)-5):
-        if highs.iloc[i] == highs.iloc[i-5:i+6].max():
-            resistance_candidates.append(highs.iloc[i])
     lows = recent["Low"]
+
+    resistance_candidates = []
     support_candidates = []
-    for i in range(5, len(lows)-5):
-        if lows.iloc[i] == lows.iloc[i-5:i+6].min():
-            support_candidates.append(lows.iloc[i])
 
-    if resistance_candidates:
-        resistance = np.mean(resistance_candidates[-3:])
-    else:
-        resistance = df["High"].tail(20).max()
-    if support_candidates:
-        support = np.mean(support_candidates[-3:])
-    else:
-        support = df["Low"].tail(20).min()
-    return support, resistance
+    if len(recent) >= 11:
+        for i in range(5, len(recent) - 5):
+            h_slice = highs.iloc[i - 5 : i + 6]
+            l_slice = lows.iloc[i - 5 : i + 6]
+            if highs.iloc[i] == h_slice.max():
+                resistance_candidates.append(highs.iloc[i])
+            if lows.iloc[i] == l_slice.min():
+                support_candidates.append(lows.iloc[i])
 
-# =========================
-# 量价组合信号
-# =========================
-def volume_price_signals(df):
+    resistance = np.mean(resistance_candidates[-3:]) if resistance_candidates else highs.tail(20).max()
+    support = np.mean(support_candidates[-3:]) if support_candidates else lows.tail(20).min()
+    return float(support), float(resistance)
+
+
+def volume_price_signals(df: pd.DataFrame):
     signals = []
+    if df is None or len(df) < 3:
+        return signals
+
     latest = df.iloc[-1]
     prev = df.iloc[-2]
-    vol_ratio = latest["Vol_Ratio"]
+    vol_ratio = latest.get("Vol_Ratio", np.nan)
     price_change = (latest["Close"] - prev["Close"]) / prev["Close"] * 100
 
-    if price_change > 0 and vol_ratio > 1.2:
-        signals.append(f"放量上涨 (涨幅{price_change:.2f}%, 量比{vol_ratio:.2f})")
-    elif price_change < 0 and vol_ratio > 1.2:
-        signals.append(f"放量下跌 (跌幅{price_change:.2f}%, 量比{vol_ratio:.2f})")
+    if pd.notna(vol_ratio):
+        if price_change > 0 and vol_ratio > 1.2:
+            signals.append(f"放量上涨（涨幅{price_change:.2f}% / 量比{vol_ratio:.2f}）")
+        elif price_change < 0 and vol_ratio > 1.2:
+            signals.append(f"放量下跌（跌幅{price_change:.2f}% / 量比{vol_ratio:.2f}）")
 
-    recent_vol_ratios = df["Vol_Ratio"].tail(3).values
-    if all(v > 1.2 for v in recent_vol_ratios):
-        signals.append("连续3日放量，动能强劲")
+        recent_vr = df["Vol_Ratio"].tail(3).dropna().values
+        if len(recent_vr) == 3 and all(v > 1.2 for v in recent_vr):
+            signals.append("连续3期放量，动能较强")
+        if price_change > 0 and vol_ratio < 0.8:
+            signals.append("价涨量缩，上攻动能偏弱")
+        elif price_change < 0 and vol_ratio > 1.2:
+            signals.append("价跌量增，短线抛压较重")
 
-    vol_ma5 = latest["VOL_MA5"]
-    vol_ma10 = latest["VOL_MA10"]
-    vol_ma20 = latest["VOL_MA20"]
-    signals.append(f"成交量均线: MA5={vol_ma5:.0f}, MA10={vol_ma10:.0f}, MA20={vol_ma20:.0f}")
-
-    if price_change > 0 and vol_ratio < 0.8:
-        signals.append("量价背离：价涨量缩，上涨乏力")
-    elif price_change < 0 and vol_ratio > 1.2:
-        signals.append("量价背离：价跌量增，恐慌抛售")
-
+    signals.append(
+        f"量均线：MA5={latest.get('VOL_MA5', np.nan):.0f}, MA10={latest.get('VOL_MA10', np.nan):.0f}, MA20={latest.get('VOL_MA20', np.nan):.0f}"
+    )
     return signals
 
-# =========================
-# K线形态识别
-# =========================
-def detect_candle_patterns(df):
+
+def detect_candle_patterns(df: pd.DataFrame):
     patterns = []
-    if len(df) < 2:
+    if df is None or len(df) < 2:
         return patterns
-    today = df.iloc[-1]
-    yesterday = df.iloc[-2]
 
-    body = abs(today["Close"] - today["Open"])
-    lower_shadow = min(today["Open"], today["Close"]) - today["Low"]
-    upper_shadow = today["High"] - max(today["Open"], today["Close"])
-    if lower_shadow > 2 * body and upper_shadow < body:
-        patterns.append("锤头线（可能反转）")
+    t = df.iloc[-1]
+    y = df.iloc[-2]
+    body = abs(t["Close"] - t["Open"])
+    lower_shadow = min(t["Open"], t["Close"]) - t["Low"]
+    upper_shadow = t["High"] - max(t["Open"], t["Close"])
 
-    if today["Close"] > today["Open"] and yesterday["Close"] < yesterday["Open"]:
-        if today["Close"] > yesterday["Open"] and today["Open"] < yesterday["Close"]:
-            patterns.append("看涨吞没（底部反转信号）")
-    if today["Close"] < today["Open"] and yesterday["Close"] > yesterday["Open"]:
-        if today["Open"] > yesterday["Close"] and today["Close"] < yesterday["Open"]:
-            patterns.append("看跌吞没（顶部反转信号）")
+    if body > 0 and lower_shadow > 2 * body and upper_shadow < body:
+        patterns.append("锤头线（潜在反转）")
+
+    # 看涨吞没
+    if t["Close"] > t["Open"] and y["Close"] < y["Open"]:
+        if t["Close"] > y["Open"] and t["Open"] < y["Close"]:
+            patterns.append("看涨吞没")
+
+    # 看跌吞没
+    if t["Close"] < t["Open"] and y["Close"] > y["Open"]:
+        if t["Open"] > y["Close"] and t["Close"] < y["Open"]:
+            patterns.append("看跌吞没")
 
     return patterns
 
-# =========================
-# 形态识别（箱体、三角形、旗形）
-# =========================
-def detect_price_patterns(df, lookback=30):
+
+def detect_price_patterns(df: pd.DataFrame, lookback: int = 30):
     patterns = []
+    if df is None or len(df) < lookback:
+        return patterns
+
     recent = df.tail(lookback)
     highs = recent["High"]
     lows = recent["Low"]
     close = recent["Close"]
 
     price_range = highs.max() - lows.min()
-    avg_range = recent["ATR"].mean() if "ATR" in recent.columns else price_range
-    if price_range < avg_range * 0.5:
-        patterns.append("箱体整理 (横盘震荡)")
+    avg_price = close.mean()
+    if avg_price > 0 and price_range / avg_price < 0.08:
+        patterns.append("箱体整理")
 
-    recent_highs = highs.tail(10).values
-    recent_lows = lows.tail(10).values
-    high_decreasing = all(recent_highs[i] > recent_highs[i+1] for i in range(len(recent_highs)-1))
-    low_increasing = all(recent_lows[i] < recent_lows[i+1] for i in range(len(recent_lows)-1))
-    if high_decreasing and low_increasing:
-        patterns.append("对称三角形 (即将突破)")
+    if len(recent) >= 15:
+        x = np.arange(15)
+        h_slope = np.polyfit(x, highs.tail(15).values, 1)[0]
+        l_slope = np.polyfit(x, lows.tail(15).values, 1)[0]
+        if h_slope < 0 and l_slope > 0:
+            patterns.append("收敛三角形（待突破）")
 
     if len(recent) >= 20:
-        price_change_20 = (close.iloc[-1] - close.iloc[-20]) / close.iloc[-20] * 100
-        if abs(price_change_20) > 10:
-            recent_5_change = (close.iloc[-1] - close.iloc[-5]) / close.iloc[-5] * 100
-            if abs(recent_5_change) < 5:
-                patterns.append("旗形整理 (趋势中继)")
+        chg20 = (close.iloc[-1] - close.iloc[-20]) / close.iloc[-20] * 100
+        chg5 = (close.iloc[-1] - close.iloc[-5]) / close.iloc[-5] * 100
+        if abs(chg20) > 10 and abs(chg5) < 4:
+            patterns.append("旗形整理（趋势中继）")
 
     return patterns
 
-# =========================
-# 背离检测（MACD、RSI、OBV）
-# =========================
-def detect_macd_divergence(df, lookback=20):
-    if len(df) < lookback:
-        return "无背离"
-    close = df["Close"].tail(lookback)
-    macd = df["MACD"].tail(lookback)
-    price_peaks = (close == close.rolling(5, center=True).max())
-    macd_peaks = (macd == macd.rolling(5, center=True).max())
-    price_troughs = (close == close.rolling(5, center=True).min())
-    macd_troughs = (macd == macd.rolling(5, center=True).min())
 
-    price_high_idx = close[price_peaks].index
-    if len(price_high_idx) >= 2:
-        last_high = price_high_idx[-1]
-        prev_high = price_high_idx[-2]
-        if close[last_high] > close[prev_high] and macd[last_high] <= macd[prev_high]:
-            return "MACD顶背离"
-    price_low_idx = close[price_troughs].index
-    if len(price_low_idx) >= 2:
-        last_low = price_low_idx[-1]
-        prev_low = price_low_idx[-2]
-        if close[last_low] < close[prev_low] and macd[last_low] >= macd[prev_low]:
-            return "MACD底背离"
-    return "无背离"
-
-def detect_rsi_divergence(df, lookback=20):
-    if len(df) < lookback:
-        return "无背离"
-    close = df["Close"].tail(lookback)
-    rsi = df["RSI"].tail(lookback)
-    price_peaks = (close == close.rolling(5, center=True).max())
-    rsi_peaks = (rsi == rsi.rolling(5, center=True).max())
-    price_troughs = (close == close.rolling(5, center=True).min())
-    rsi_troughs = (rsi == rsi.rolling(5, center=True).min())
-
-    price_high_idx = close[price_peaks].index
-    if len(price_high_idx) >= 2:
-        last_high = price_high_idx[-1]
-        prev_high = price_high_idx[-2]
-        if close[last_high] > close[prev_high] and rsi[last_high] <= rsi[prev_high]:
-            return "RSI顶背离"
-    price_low_idx = close[price_troughs].index
-    if len(price_low_idx) >= 2:
-        last_low = price_low_idx[-1]
-        prev_low = price_low_idx[-2]
-        if close[last_low] < close[prev_low] and rsi[last_low] >= rsi[prev_low]:
-            return "RSI底背离"
-    return "无背离"
-
-def detect_obv_divergence(df, lookback=20):
-    close = df["Close"].tail(lookback)
-    obv = df["OBV"].tail(lookback)
-    price_peaks = (close == close.rolling(5, center=True).max())
-    obv_peaks = (obv == obv.rolling(5, center=True).max())
-    price_troughs = (close == close.rolling(5, center=True).min())
-    obv_troughs = (obv == obv.rolling(5, center=True).min())
-
-    price_high_idx = close[price_peaks].index
-    if len(price_high_idx) >= 2:
-        last_high = price_high_idx[-1]
-        prev_high = price_high_idx[-2]
-        if close[last_high] > close[prev_high] and obv[last_high] <= obv[prev_high]:
-            return "OBV顶背离"
-    price_low_idx = close[price_troughs].index
-    if len(price_low_idx) >= 2:
-        last_low = price_low_idx[-1]
-        prev_low = price_low_idx[-2]
-        if close[last_low] < close[prev_low] and obv[last_low] >= obv[prev_low]:
-            return "OBV底背离"
-    return "无背离"
-
-# =========================
-# 筹码集中度定性描述
-# =========================
-def describe_chip_concentration(df):
-    vol_series = df["Volume"].tail(20)
-    vol_cv = vol_series.std() / vol_series.mean() if vol_series.mean() != 0 else 1
-    close = df["Close"].iloc[-1]
-    high = df["High"].tail(20).max()
-    low = df["Low"].tail(20).min()
-    price_position = (close - low) / (high - low) if high != low else 0.5
-
-    if "Turnover" in df.columns:
-        turnover = df["Turnover"].iloc[-1]
-        if turnover > 5:
-            concentration = "筹码分散，活跃度高"
-        elif turnover > 2:
-            concentration = "筹码相对集中，交易活跃"
-        else:
-            concentration = "筹码高度集中，交投清淡"
+def _last_two_pivots(series: pd.Series, mode: str = "high", window: int = 5):
+    roll = series.rolling(window, center=True, min_periods=window)
+    if mode == "high":
+        pivots = series[series == roll.max()].dropna()
     else:
-        if vol_cv < 0.5 and price_position > 0.3 and price_position < 0.7:
-            concentration = "筹码集中，支撑较强"
-        elif vol_cv > 1:
-            concentration = "筹码分散，容易大起大落"
-        else:
-            concentration = "筹码一般，波动中等"
-    return concentration
+        pivots = series[series == roll.min()].dropna()
 
-# =========================
-# 动态评分与决策
-# =========================
-def detailed_analysis(df, pe=None, pb=None):
-    if df is None or len(df) < 60:
+    if len(pivots) >= 2:
+        return pivots.index[-2], pivots.index[-1]
+    return None, None
+
+
+def detect_divergence(price: pd.Series, indicator: pd.Series, lookback: int = 30):
+    p = price.tail(lookback).dropna()
+    i = indicator.reindex(p.index).dropna()
+    p = p.reindex(i.index)
+
+    if len(p) < 10 or len(i) < 10:
+        return "无背离"
+
+    h1, h2 = _last_two_pivots(p, mode="high")
+    if h1 is not None and h2 is not None and pd.notna(i.loc[h1]) and pd.notna(i.loc[h2]):
+        if p.loc[h2] > p.loc[h1] and i.loc[h2] <= i.loc[h1]:
+            return "顶背离"
+
+    l1, l2 = _last_two_pivots(p, mode="low")
+    if l1 is not None and l2 is not None and pd.notna(i.loc[l1]) and pd.notna(i.loc[l2]):
+        if p.loc[l2] < p.loc[l1] and i.loc[l2] >= i.loc[l1]:
+            return "底背离"
+
+    return "无背离"
+
+
+def detect_macd_divergence(df: pd.DataFrame, lookback: int = 30):
+    return detect_divergence(df["Close"], df["MACD"], lookback=lookback)
+
+
+def detect_rsi_divergence(df: pd.DataFrame, lookback: int = 30):
+    return detect_divergence(df["Close"], df["RSI"], lookback=lookback)
+
+
+def detect_obv_divergence(df: pd.DataFrame, lookback: int = 30):
+    return detect_divergence(df["Close"], df["OBV"], lookback=lookback)
+
+
+def describe_chip_concentration(df: pd.DataFrame):
+    vol = df["Volume"].tail(20)
+    if vol.mean() == 0:
+        return "筹码一般"
+
+    vol_cv = vol.std() / vol.mean()
+    close = df["Close"].iloc[-1]
+    high20 = df["High"].tail(20).max()
+    low20 = df["Low"].tail(20).min()
+    pos = (close - low20) / (high20 - low20) if high20 != low20 else 0.5
+
+    if vol_cv < 0.5 and 0.3 < pos < 0.7:
+        return "筹码集中，支撑相对较强"
+    if vol_cv > 1.0:
+        return "筹码分散，波动可能较大"
+    return "筹码中性，波动中等"
+
+
+def detailed_analysis(df: pd.DataFrame, pe=None, pb=None):
+    if df is None or len(df) < 35:
         return None
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
-    price = latest["Close"]
 
-    # 获取关键指标
-    ma5 = latest.get("MA5", price)
-    ma10 = latest.get("MA10", price)
-    ma20 = latest.get("MA20", price)
-    ma60 = latest.get("MA60", price)
-    ma120 = latest.get("MA120", price)
-    vol_ratio = latest["Vol_Ratio"]
-    rsi = latest["RSI"]
-    bias = latest["BIAS"]
-    adx = latest.get("ADX", 20)
-    plus_di = latest.get("+DI", 25)
-    minus_di = latest.get("-DI", 25)
-    cmf = latest.get("CMF", 0)
-    mfi = latest.get("MFI", 50)
-    obv = latest["OBV"]
-    obv_ma = latest["OBV_MA20"]
-    macd = latest.get("MACD", 0)
-    macd_signal = latest.get("MACD_signal", 0)
-    macd_hist = latest.get("MACD_hist", 0)
+    price = float(latest["Close"])
+    prev_close = float(prev["Close"])
+    change_pct = (price - prev_close) / prev_close * 100
 
-    vol_high_th = latest.get("Vol_Ratio_Threshold_High", 1.5)
-    vol_low_th = latest.get("Vol_Ratio_Threshold_Low", 0.8)
+    def _v(col, default):
+        val = latest.get(col, np.nan)
+        if pd.isna(val):
+            if col in df.columns and not df[col].dropna().empty:
+                return float(df[col].dropna().iloc[-1])
+            return float(default)
+        return float(val)
 
-    # 趋势判断
-    is_bullish_alignment = ma5 > ma10 > ma20
-    is_above_ma60 = price > ma60
-    if adx > 25:
+    ma5 = _v("MA5", price)
+    ma10 = _v("MA10", price)
+    ma20 = _v("MA20", price)
+    ma60 = _v("MA60", ma20)
+    ma120 = _v("MA120", ma60)
+
+    vol_ratio = _v("Vol_Ratio", 1.0)
+    vol_high_th = _v("Vol_Ratio_Threshold_High", 1.5)
+    vol_low_th = _v("Vol_Ratio_Threshold_Low", 0.8)
+
+    rsi = _v("RSI", 50)
+    bias = _v("BIAS", 0)
+
+    adx = _v("ADX", 20)
+    plus_di = _v("+DI", 25)
+    minus_di = _v("-DI", 25)
+
+    cmf = _v("CMF", 0)
+    mfi = _v("MFI", 50)
+
+    macd = _v("MACD", 0)
+    macd_signal = _v("MACD_signal", 0)
+    macd_hist = _v("MACD_hist", 0)
+
+    is_bull = ma5 > ma10 > ma20
+    is_bear = ma5 < ma10 < ma20
+
+    if adx >= 25:
         trend_strength = "强趋势"
-        if plus_di > minus_di:
-            trend_desc = "强势多头"
-            trend_score = 30
-        else:
-            trend_desc = "强势空头"
-            trend_score = 0
     else:
-        trend_strength = "震荡/弱趋势"
-        if is_bullish_alignment and is_above_ma60:
-            trend_desc = "多头初期"
-            trend_score = 20
-        elif price > ma20 and ma20 < ma60:
-            trend_desc = "震荡筑底"
-            trend_score = 10
-        else:
-            trend_desc = "空头趋势"
-            trend_score = 0
+        trend_strength = "弱趋势/震荡"
 
-    # 量价结构
-    price_change = price - prev["Close"]
-    if price > prev["Close"] and vol_ratio > vol_high_th:
+    if is_bull and price > ma60 and plus_di >= minus_di:
+        trend_desc = "强势多头" if adx >= 25 else "多头结构"
+    elif is_bear and price < ma60 and minus_di > plus_di:
+        trend_desc = "强势空头" if adx >= 25 else "空头结构"
+    elif price >= ma20:
+        trend_desc = "震荡偏多"
+    else:
+        trend_desc = "震荡偏空"
+
+    trend_score = 0
+    if price > ma20:
+        trend_score += 8
+    if price > ma60:
+        trend_score += 8
+    if is_bull:
+        trend_score += 8
+    if adx >= 25 and plus_di > minus_di:
+        trend_score += 6
+    elif adx >= 25 and plus_di < minus_di:
+        trend_score -= 3
+    trend_score = int(np.clip(trend_score, 0, 30))
+
+    # 量价评分
+    if change_pct > 0 and vol_ratio > vol_high_th:
         vpa_signal = "放量进攻"
         vpa_score = 20
-        vpa_detail = f"价格上涨+放量：当前量比{vol_ratio:.2f}，超过动态上轨{vol_high_th:.2f}，买盘积极"
-    elif price < prev["Close"] and vol_ratio < vol_low_th and price > ma20:
-        vpa_signal = "良性回踩"
+        vpa_detail = f"上涨 + 放量，量比{vol_ratio:.2f} > 动态上轨{vol_high_th:.2f}"
+    elif change_pct < 0 and vol_ratio < vol_low_th and price > ma20:
+        vpa_signal = "缩量回踩"
         vpa_score = 15
-        vpa_detail = f"价格下跌但缩量：量比{vol_ratio:.2f}低于动态下轨{vol_low_th:.2f}，抛压减轻"
-    elif price > prev["Close"] and vol_ratio < vol_low_th:
-        vpa_signal = "诱多背离"
-        vpa_score = 5
-        vpa_detail = f"价格上涨但缩量：量比低于下轨，上涨乏力"
-    elif price < prev["Close"] and vol_ratio > vol_high_th:
-        vpa_signal = "恐慌放量"
-        vpa_score = 0
-        vpa_detail = f"价格下跌+放量：恐慌盘涌出"
+        vpa_detail = f"回踩缩量，量比{vol_ratio:.2f} < 动态下轨{vol_low_th:.2f}"
+    elif change_pct > 0 and vol_ratio < vol_low_th:
+        vpa_signal = "价涨量缩"
+        vpa_score = 6
+        vpa_detail = "上攻动能一般，警惕冲高回落"
+    elif change_pct < 0 and vol_ratio > vol_high_th:
+        vpa_signal = "放量下杀"
+        vpa_score = 2
+        vpa_detail = "短线恐慌盘释放，注意防守"
     else:
         vpa_signal = "中性"
         vpa_score = 10
-        vpa_detail = f"量比{vol_ratio:.2f}处于正常区间"
+        vpa_detail = f"量比{vol_ratio:.2f}，处于常态区间"
 
     # RSI
-    if trend_desc in ["强势多头", "多头初期"]:
-        overbought = 80
-        oversold = 30
-    else:
-        overbought = 70
-        oversold = 40
-
-    if oversold < rsi < overbought:
-        rsi_status = "适度强势"
+    if 45 <= rsi <= 70:
+        rsi_status = "健康强势"
         rsi_score = 15
-        rsi_detail = f"RSI={rsi:.1f}，处于{oversold}-{overbought}健康区间"
-    elif rsi >= overbought:
+    elif rsi > 80:
         rsi_status = "超买预警"
         rsi_score = 5
-        rsi_detail = f"RSI={rsi:.1f}，超过{overbought}，短期过热"
-    elif rsi <= oversold:
-        rsi_status = "超卖反弹"
-        rsi_score = 5
-        rsi_detail = f"RSI={rsi:.1f}，低于{oversold}，超卖可能反弹"
+    elif rsi < 30:
+        rsi_status = "超卖反弹区"
+        rsi_score = 8
     else:
         rsi_status = "中性"
         rsi_score = 10
 
-    # 乖离率
+    # BIAS
     bias_abs = abs(bias)
-    if bias_abs > 8:
-        bias_status = "严重偏离均线，回归概率大"
-        bias_score = 5
-    elif bias_abs > 5:
-        bias_status = "中度偏离，注意回归"
+    if bias_abs <= 5:
+        bias_status = "偏离正常"
         bias_score = 10
+    elif bias_abs <= 8:
+        bias_status = "中度偏离"
+        bias_score = 6
     else:
-        bias_status = "正常偏离"
-        bias_score = 15
+        bias_status = "严重偏离，警惕回归"
+        bias_score = 2
 
-    # 资金流向
+    # 资金流
+    obv_div_short = detect_obv_divergence(df)
+    obv_div_text = f"OBV{obv_div_short}" if obv_div_short != "无背离" else "无背离"
+
     money_score = 0
-    money_detail = ""
+    money_detail = []
+
     if cmf > 0.1:
-        money_status = "资金持续流入"
         money_score += 8
-        money_detail += f"CMF={cmf:.2f}>0.1，资金积极介入；"
+        money_detail.append(f"CMF={cmf:.2f}，资金偏流入")
+        money_status = "资金流入"
     elif cmf < -0.1:
-        money_status = "资金持续流出"
-        money_score += 0
-        money_detail += f"CMF={cmf:.2f}<-0.1，资金撤离；"
-    else:
-        money_status = "资金平衡"
-        money_score += 5
-        money_detail += f"CMF={cmf:.2f}，资金博弈均衡；"
-
-    if mfi > 70:
-        money_status += "，MFI超买"
-        money_detail += f"MFI={mfi:.1f}>70，资金过热；"
-        money_score -= 2
-    elif mfi < 30:
-        money_status += "，MFI超卖"
-        money_detail += f"MFI={mfi:.1f}<30，资金过度悲观；"
         money_score += 2
+        money_detail.append(f"CMF={cmf:.2f}，资金偏流出")
+        money_status = "资金流出"
     else:
-        money_detail += f"MFI={mfi:.1f}正常；"
-
-    obv_div = detect_obv_divergence(df)
-    if obv_div == "顶背离":
-        money_score -= 5
-        money_detail += "⚠️ OBV顶背离，警惕反转；"
-    elif obv_div == "底背离":
         money_score += 5
-        money_detail += "✅ OBV底背离，潜在买点；"
-    else:
-        money_detail += "OBV无背离；"
+        money_detail.append(f"CMF={cmf:.2f}，资金中性")
+        money_status = "资金平衡"
 
-    total_score = trend_score + vpa_score + rsi_score + money_score
+    if 40 <= mfi <= 70:
+        money_score += 5
+        money_detail.append(f"MFI={mfi:.1f}，资金温和")
+    elif mfi > 80:
+        money_score -= 1
+        money_detail.append(f"MFI={mfi:.1f}，过热")
+    elif mfi < 25:
+        money_score += 2
+        money_detail.append(f"MFI={mfi:.1f}，超卖区")
+
+    if obv_div_short == "底背离":
+        money_score += 4
+        money_detail.append("OBV底背离，潜在转强")
+    elif obv_div_short == "顶背离":
+        money_score -= 4
+        money_detail.append("OBV顶背离，警惕转弱")
+
+    money_score = int(np.clip(money_score, 0, 20))
+    money_detail_text = "；".join(money_detail)
 
     support, resistance = find_support_resistance(df)
+    atr = _v("ATR", price * 0.02)
+    if atr <= 0:
+        atr = price * 0.02
 
-    atr = latest.get("ATR", price * 0.02)
-    stop_loss_from_support = support * 0.98
-    stop_loss_from_atr = price - 2 * atr
-    stop_loss = max(stop_loss_from_support, stop_loss_from_atr)
-    take_profit = resistance * 0.98 if resistance > price else price + 3 * atr
+    stop_loss = min(support * 0.98, price - 1.8 * atr)
+    if stop_loss >= price:
+        stop_loss = price - 1.8 * atr
 
-    risk = price - stop_loss
-    reward = take_profit - price
+    take_profit = max(resistance * 0.99, price + 2.2 * atr)
+    if take_profit <= price:
+        take_profit = price + 2.2 * atr
+
+    risk = max(price - stop_loss, price * 0.004)
+    reward = max(take_profit - price, price * 0.006)
     risk_reward = reward / risk if risk > 0 else 0
+    position_size_pct = min(0.02 / (risk / price), 0.5) if risk > 0 else 0
 
-    position_size_pct = 0.02 / (risk / price) if risk > 0 else 0
-    position_size_pct = min(position_size_pct, 0.5)
+    total_score = int(np.clip(trend_score + vpa_score + rsi_score + bias_score + money_score, 0, 100))
 
-    if total_score >= 60:
+    if total_score >= 75:
         status = "🔥 强力做多"
-        advice = f"各项指标共振，建议买入/加仓。仓位建议：{position_size_pct:.0%}。"
+        advice = f"可考虑分批买入/加仓，建议仓位上限约 {position_size_pct:.0%}。"
         action_color = "success"
-    elif total_score >= 40:
+    elif total_score >= 60:
         status = "📈 谨慎看多"
-        advice = f"趋势向好但需观察量能，可轻仓参与。仓位建议：{position_size_pct:.0%}。"
+        advice = f"结构偏多，可轻中仓跟随，建议仓位约 {position_size_pct:.0%}。"
         action_color = "info"
-    elif total_score >= 20:
+    elif total_score >= 45:
         status = "🔄 震荡观望"
-        advice = "方向不明，建议等待明确信号。"
+        advice = "方向不够清晰，建议等待放量突破或关键位确认。"
         action_color = "warning"
     else:
         status = "❄️ 空头回避"
-        advice = "空头排列，资金流出，建议空仓。"
+        advice = "趋势弱且资金不佳，优先防守，减少参与。"
         action_color = "error"
-
-    chip_concentration = describe_chip_concentration(df)
-
-    volume_price_signals_list = volume_price_signals(df)
-    candle_patterns = detect_candle_patterns(df)
-    price_patterns = detect_price_patterns(df)
-    macd_div = detect_macd_divergence(df)
-    rsi_div = detect_rsi_divergence(df)
 
     return {
         "price": price,
-        "change": (price - prev["Close"]) / prev["Close"] * 100,
-        "volume": latest["Volume"],
-        "vol_ma20": latest["VOL_MA20"],
+        "change": change_pct,
+        "volume": float(latest["Volume"]),
+        "vol_ma20": _v("VOL_MA20", latest["Volume"]),
         "vol_ratio": vol_ratio,
         "pe": pe,
         "pb": pb,
-        "chip_concentration": chip_concentration,
-        "ma5": ma5, "ma10": ma10, "ma20": ma20, "ma60": ma60, "ma120": ma120,
+        "chip_concentration": describe_chip_concentration(df),
+        "ma5": ma5,
+        "ma10": ma10,
+        "ma20": ma20,
+        "ma60": ma60,
+        "ma120": ma120,
         "trend": trend_desc,
         "trend_strength": trend_strength,
         "adx": adx,
@@ -660,295 +810,643 @@ def detailed_analysis(df, pe=None, pb=None):
         "vpa_detail": vpa_detail,
         "cmf": cmf,
         "mfi": mfi,
-        "obv_div": obv_div,
+        "obv_div": obv_div_text,
         "money_status": money_status,
-        "money_detail": money_detail,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "support": support,
-        "resistance": resistance,
-        "risk_reward": risk_reward,
-        "position_size": position_size_pct,
+        "money_detail": money_detail_text,
+        "stop_loss": float(stop_loss),
+        "take_profit": float(take_profit),
+        "support": float(support),
+        "resistance": float(resistance),
+        "risk_reward": float(risk_reward),
+        "position_size": float(position_size_pct),
         "status": status,
         "advice": advice,
         "action_color": action_color,
         "trend_score": trend_score,
         "vpa_score": vpa_score,
         "rsi_score": rsi_score,
-        "money_score": money_score,
         "bias_score": bias_score,
+        "money_score": money_score,
         "total_score": total_score,
         "atr": atr,
-        "volume_price_signals": volume_price_signals_list,
-        "candle_patterns": candle_patterns,
-        "price_patterns": price_patterns,
-        "macd_divergence": macd_div,
-        "rsi_divergence": rsi_div,
+        "volume_price_signals": volume_price_signals(df),
+        "candle_patterns": detect_candle_patterns(df),
+        "price_patterns": detect_price_patterns(df),
+        "macd_divergence": detect_macd_divergence(df),
+        "rsi_divergence": detect_rsi_divergence(df),
     }
 
-def get_score(df):
-    if df is None or len(df) < 20:
+
+def get_score(df: pd.DataFrame):
+    if df is None or len(df) < 30:
         return 0
-    latest = df.iloc[-1]
+
+    dfi = df.copy()
+    if "MA20" not in dfi.columns:
+        dfi = add_advanced_indicators(dfi)
+
+    if dfi is None or len(dfi) < 30:
+        return 0
+
+    latest = dfi.iloc[-1]
+    prev = dfi.iloc[-2]
+
     score = 0
-    if latest["Close"] > latest.get("MA20", 0): score += 15
-    if latest.get("MA20", 0) > latest.get("MA60", 0): score += 15
-    if latest.get("MA5", 0) > latest.get("MA10", 0): score += 10
-    vol_ratio = latest.get("Vol_Ratio", 1)
-    vol_high = latest.get("Vol_Ratio_Threshold_High", 1.5)
-    if vol_ratio > vol_high: score += 15
-    if latest.get("OBV", 0) > latest.get("OBV_MA20", 0): score += 15
+    if latest["Close"] > latest.get("MA20", np.nan):
+        score += 20
+    if latest.get("MA20", np.nan) > latest.get("MA60", np.nan):
+        score += 15
+    if latest.get("MA5", np.nan) > latest.get("MA10", np.nan) > latest.get("MA20", np.nan):
+        score += 15
+
+    vr = latest.get("Vol_Ratio", 1)
+    if vr > 1.2:
+        score += 10
+    elif vr < 0.8:
+        score += 4
+
+    if latest.get("MACD", 0) > latest.get("MACD_signal", 0):
+        score += 15
+
     rsi = latest.get("RSI", 50)
-    if 40 < rsi < 75: score += 15
-    if latest["Close"] > df.iloc[-2]["Close"]: score += 15
-    return score
+    if 45 <= rsi <= 70:
+        score += 15
+    elif rsi < 35:
+        score += 8
 
-# =========================
-# AI 分析函数
-# =========================
-def ai_analysis(analysis, ticker, stock_name, api_key, base_url, model):
+    if latest.get("CMF", 0) > 0:
+        score += 10
+
+    if latest["Close"] > prev["Close"]:
+        score += 10
+
+    return int(np.clip(score, 0, 100))
+
+
+def build_chart(df: pd.DataFrame, period: str, ticker: str, support=None, resistance=None):
+    if df is None or df.empty:
+        return None
+
+    bars = PERIOD_DAYS.get(period, 252)
+    show_df = df.tail(bars).copy()
+    if show_df.empty:
+        return None
+
+    up_color, down_color = market_colors(ticker)
+    vol_colors = np.where(show_df["Close"] >= show_df["Open"], up_color, down_color)
+    macd_bar_colors = np.where(show_df["MACD_hist"] >= 0, up_color, down_color)
+
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.56, 0.18, 0.26],
+        specs=[[{}], [{}], [{"secondary_y": True}]],
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=show_df.index,
+            open=show_df["Open"],
+            high=show_df["High"],
+            low=show_df["Low"],
+            close=show_df["Close"],
+            name="K线",
+            increasing_line_color=up_color,
+            decreasing_line_color=down_color,
+            increasing_fillcolor=up_color,
+            decreasing_fillcolor=down_color,
+        ),
+        row=1,
+        col=1,
+    )
+
+    for ma, color in [("MA5", "#6366f1"), ("MA20", "#f59e0b"), ("MA60", "#10b981")]:
+        if ma in show_df.columns:
+            fig.add_trace(
+                go.Scatter(x=show_df.index, y=show_df[ma], name=ma, line=dict(color=color, width=1.4)),
+                row=1,
+                col=1,
+            )
+
+    if support is not None:
+        fig.add_hline(y=support, row=1, col=1, line_dash="dot", line_color="#22c55e", opacity=0.8)
+    if resistance is not None:
+        fig.add_hline(y=resistance, row=1, col=1, line_dash="dot", line_color="#ef4444", opacity=0.8)
+
+    fig.add_trace(
+        go.Bar(x=show_df.index, y=show_df["Volume"], name="成交量", marker_color=vol_colors, opacity=0.8),
+        row=2,
+        col=1,
+    )
+    if "VOL_MA20" in show_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=show_df.index,
+                y=show_df["VOL_MA20"],
+                name="VOL_MA20",
+                line=dict(color="#f59e0b", width=1.2),
+            ),
+            row=2,
+            col=1,
+        )
+
+    fig.add_trace(
+        go.Bar(
+            x=show_df.index,
+            y=show_df["MACD_hist"],
+            name="MACD柱",
+            marker_color=macd_bar_colors,
+            opacity=0.7,
+        ),
+        row=3,
+        col=1,
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=show_df.index, y=show_df["MACD"], name="DIF", line=dict(color="#2563eb", width=1.4)
+        ),
+        row=3,
+        col=1,
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=show_df.index, y=show_df["MACD_signal"], name="DEA", line=dict(color="#9333ea", width=1.2)
+        ),
+        row=3,
+        col=1,
+        secondary_y=False,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=show_df.index,
+            y=show_df["RSI"],
+            name="RSI",
+            line=dict(color="#0ea5e9", width=1.2, dash="dot"),
+            opacity=0.9,
+        ),
+        row=3,
+        col=1,
+        secondary_y=True,
+    )
+
+    fig.update_yaxes(title_text="价格", row=1, col=1)
+    fig.update_yaxes(title_text="成交量", row=2, col=1)
+    fig.update_yaxes(title_text="MACD", row=3, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="RSI", row=3, col=1, secondary_y=True, range=[0, 100])
+
+    fig.update_layout(
+        height=860,
+        template="plotly_white",
+        margin=dict(l=8, r=8, t=20, b=8),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+    )
+
+    return fig
+
+
+def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base_url: str, model: str):
+    pe_text = "N/A" if analysis["pe"] is None else f"{analysis['pe']:.2f}"
+    pb_text = "N/A" if analysis["pb"] is None else f"{analysis['pb']:.2f}"
+
     prompt = f"""
-    请基于以下数据对股票 {stock_name} ({ticker}) 进行专业的技术面分析，给出交易建议。
+请基于以下量化技术数据，对 {stock_name} ({ticker}) 输出专业交易分析：
 
-    【基本信息】
-    价格: {analysis['price']:.2f} ({analysis['change']:+.2f}%)
-    成交量: {analysis['volume']:.0f}，20日均量: {analysis['vol_ma20']:.0f}，量比: {analysis['vol_ratio']:.2f}
-    市盈率PE: {analysis['pe'] if analysis['pe'] else 'N/A'}，市净率PB: {analysis['pb'] if analysis['pb'] else 'N/A'}
-    筹码集中度: {analysis['chip_concentration']}
+【价格与量能】
+- 价格：{analysis['price']:.2f}（{analysis['change']:+.2f}%）
+- 量比：{analysis['vol_ratio']:.2f}，成交量：{analysis['volume']:.0f}，20均量：{analysis['vol_ma20']:.0f}
 
-    【趋势指标】
-    均线排列: MA5={analysis['ma5']:.2f}, MA10={analysis['ma10']:.2f}, MA20={analysis['ma20']:.2f}, MA60={analysis['ma60']:.2f}, MA120={analysis['ma120']:.2f}
-    趋势定性: {analysis['trend']} ({analysis['trend_strength']})
-    ADX: {analysis['adx']:.1f}，+DI={analysis['plus_di']:.1f}，-DI={analysis['minus_di']:.1f}
-    MACD: DIF={analysis['macd']:.3f}, DEA={analysis['macd_signal']:.3f}, 柱状线={analysis['macd_hist']:.3f}
+【趋势与动量】
+- MA5/10/20/60/120：{analysis['ma5']:.2f}/{analysis['ma10']:.2f}/{analysis['ma20']:.2f}/{analysis['ma60']:.2f}/{analysis['ma120']:.2f}
+- 趋势：{analysis['trend']}（{analysis['trend_strength']}）
+- ADX={analysis['adx']:.1f}, +DI={analysis['plus_di']:.1f}, -DI={analysis['minus_di']:.1f}
+- MACD: DIF={analysis['macd']:.3f}, DEA={analysis['macd_signal']:.3f}, Hist={analysis['macd_hist']:.3f}
+- RSI={analysis['rsi']:.1f}（{analysis['rsi_status']}），BIAS={analysis['bias']:.2f}%（{analysis['bias_status']}）
 
-    【超买超卖】
-    RSI: {analysis['rsi']:.1f} ({analysis['rsi_status']})
-    乖离率BIAS: {analysis['bias']:.2f}% ({analysis['bias_status']})
+【资金与结构】
+- CMF={analysis['cmf']:.3f}, MFI={analysis['mfi']:.1f}, OBV背离={analysis['obv_div']}
+- 量价信号：{analysis['vpa_signal']}（{analysis['vpa_detail']}）
+- K线形态：{", ".join(analysis['candle_patterns']) if analysis['candle_patterns'] else "无"}
+- 价格形态：{", ".join(analysis['price_patterns']) if analysis['price_patterns'] else "无"}
+- 背离：MACD={analysis['macd_divergence']} / RSI={analysis['rsi_divergence']}
 
-    【量价资金】
-    量价信号: {analysis['vpa_signal']} — {analysis['vpa_detail']}
-    CMF: {analysis['cmf']:.3f}, MFI: {analysis['mfi']:.1f}
-    OBV背离: {analysis['obv_div']}
-    量价组合信号: {', '.join(analysis['volume_price_signals']) if analysis['volume_price_signals'] else '无'}
+【风险参数】
+- 支撑/压力：{analysis['support']:.2f}/{analysis['resistance']:.2f}
+- 止损/目标：{analysis['stop_loss']:.2f}/{analysis['take_profit']:.2f}
+- 盈亏比：{analysis['risk_reward']:.2f}
+- 估值：PE={pe_text}, PB={pb_text}
 
-    【技术形态】
-    K线形态: {', '.join(analysis['candle_patterns']) if analysis['candle_patterns'] else '无'}
-    价格形态: {', '.join(analysis['price_patterns']) if analysis['price_patterns'] else '无'}
+请按以下结构回答：
+1) 趋势与强弱结论（先给结论）
+2) 关键证据（至少5条）
+3) 三种情景（突破上涨 / 震荡 / 跌破）下的应对
+4) 最终建议（买入/卖出/观望）+ 建议仓位 + 风险提示
+"""
 
-    【背离信号】
-    MACD背离: {analysis['macd_divergence']}
-    RSI背离: {analysis['rsi_divergence']}
-    OBV背离: {analysis['obv_div']}
-
-    【风险与支撑】
-    支撑位: {analysis['support']:.2f}, 压力位: {analysis['resistance']:.2f}
-    建议止损: {analysis['stop_loss']:.2f}, 目标位: {analysis['take_profit']:.2f}
-    盈亏比: {analysis['risk_reward']:.2f}
-
-    请结合以上指标给出综合判断，并说明理由。最后给出明确的交易建议（买入/卖出/观望）及仓位建议。
-    """
     try:
-        client = openai.OpenAI(
-            api_key=api_key,
-            base_url=base_url
-        )
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "你是一位经验丰富的交易员，擅长技术分析和基本面分析。"},
-                {"role": "user", "content": prompt}
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        kwargs = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "你是一位职业交易员，输出务必结构化、可执行。"},
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.7,
-            max_tokens=2000
-        )
-        return response.choices[0].message.content
+            "temperature": 0.5,
+        }
+        if use_max_completion_tokens(model):
+            kwargs["max_completion_tokens"] = 1600
+        else:
+            kwargs["max_tokens"] = 1600
+
+        resp = client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content
     except Exception as e:
-        return f"⚠️ AI分析调用失败：{str(e)}"
+        return f"⚠️ AI分析调用失败：{e}"
+
+
+def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url: str):
+    if not api_key:
+        return "请先在左侧输入 API Key。"
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    messages = [{"role": "system", "content": "你是一个专业的金融与编程助手，请给出清晰、实用、准确的回答。"}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+
+    # 优先尝试 chat.completions（兼容大多数网关）
+    try:
+        kwargs = {"model": model, "messages": messages, "temperature": 0.5}
+        if use_max_completion_tokens(model):
+            kwargs["max_completion_tokens"] = 1200
+        else:
+            kwargs["max_tokens"] = 1200
+
+        resp = client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content
+    except Exception as e1:
+        # codex兜底尝试 responses API
+        if "codex" in model.lower():
+            try:
+                input_items = []
+                for m in messages:
+                    input_items.append(
+                        {
+                            "role": m["role"],
+                            "content": [{"type": "input_text", "text": m["content"]}],
+                        }
+                    )
+                resp = client.responses.create(
+                    model=model,
+                    input=input_items,
+                    max_output_tokens=1200,
+                )
+                text = getattr(resp, "output_text", None)
+                if text:
+                    return text
+
+                # 兼容兜底解析
+                outputs = []
+                for item in getattr(resp, "output", []):
+                    for c in getattr(item, "content", []):
+                        ctype = getattr(c, "type", "")
+                        if ctype in ("output_text", "text"):
+                            outputs.append(getattr(c, "text", ""))
+                return "".join(outputs) if outputs else "（模型返回空内容）"
+            except Exception as e2:
+                return f"⚠️ 聊天调用失败：{e2}"
+
+        return f"⚠️ 聊天调用失败：{e1}"
+
 
 # =========================
-# 主界面
+# 侧边栏
 # =========================
-if st.sidebar.button("执行深度洞察"):
-    with st.spinner("正在解析市场微观结构..."):
-        stock_name, pe, pb = get_stock_info(ticker_input)
-        df_d_raw = get_data(ticker_input, period_select, "1d")
-        df_w_raw = get_data(ticker_input, period_select, "1wk")   # 周线使用相同周期
-        df_h_raw = get_data(ticker_input, "1mo", "60m")           # 小时线最多取1个月
+with st.sidebar:
+    st.header("🛠️ 交易控制台")
+    ticker_input = st.text_input("标的代码（如 000001 / AAPL）", "000001").strip().upper()
+    period_select = st.selectbox("回测周期（显示长度）", list(PERIOD_DAYS.keys()), index=3)
 
-    if df_d_raw is not None and len(df_d_raw) > 20:
-        df_d = add_advanced_indicators(df_d_raw)
-        analysis = detailed_analysis(df_d, pe, pb)
+    st.subheader("📊 多周期权重")
+    w_d = st.slider("日线权重", 0.0, 1.0, 0.50, 0.05)
+    w_w = st.slider("周线权重", 0.0, 1.0, 0.30, 0.05)
+    w_h = st.slider("小时线权重", 0.0, 1.0, 0.20, 0.05)
 
-        if analysis:
-            # 头部信息
-            st.markdown(f'<div class="stock-name">{stock_name} ({ticker_input})</div>', unsafe_allow_html=True)
-            col_p1, col_p2 = st.columns([2, 3])
-            with col_p1:
-                color = "#16a34a" if analysis['change'] < 0 else "#dc2626"
-                st.markdown(
-                    f'<div class="price-tag">¥{analysis["price"]:.2f} <span style="font-size:1.5rem; color:{color};">{analysis["change"]:+.2f}%</span></div>',
-                    unsafe_allow_html=True)
-                vol_ratio = analysis['vol_ratio']
-                vol_text = "放量" if vol_ratio > 1.2 else "缩量" if vol_ratio < 0.8 else "平量"
-                st.write(f"成交量：{analysis['volume']:,.0f} | 20日均量：{analysis['vol_ma20']:,.0f} | {vol_text}（量比{vol_ratio:.2f}）")
-                pe_str = f"{analysis['pe']:.2f}" if analysis['pe'] else "N/A"
-                pb_str = f"{analysis['pb']:.2f}" if analysis['pb'] else "N/A"
-                st.write(f"市盈率(PE)：{pe_str}  市净率(PB)：{pb_str}")
-                st.write(f"平均成本参考：MA20={analysis['ma20']:.2f}，MA60={analysis['ma60']:.2f}")
-                st.write(f"筹码集中度：{analysis['chip_concentration']}")
+    total_w = w_d + w_w + w_h
+    if total_w > 0:
+        w_d, w_w, w_h = w_d / total_w, w_w / total_w, w_h / total_w
+    st.caption(f"归一化后：日线 {w_d:.0%} / 周线 {w_w:.0%} / 小时线 {w_h:.0%}")
 
-            # 多周期评分
+    st.subheader("🗄️ 数据源")
+    data_source = st.selectbox(
+        "选择数据源",
+        [
+            "yfinance（免费，部分市场延迟）",
+            "akshare（A股更稳，需本地已安装 akshare）",
+        ],
+        index=0,
+    )
+    if "akshare" in data_source:
+        st.caption("若报错请先安装：pip install akshare")
+
+    st.subheader("🤖 AI 配置")
+    default_key = os.getenv("AI_API_KEY")
+    ai_api_key = st.text_input("API Key", type="password", value=default_key)
+    ai_base_url = st.text_input("Base URL", value="https://aihubmix.com/v1")
+
+    ai_report_model = st.selectbox(
+        "AI报告模型",
+        ["gpt-5.4-high", "gpt-4.1", "o3-mini", "gpt-5.2"],
+        index=0,
+        key="ai_report_model",
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("清空缓存"):
+            st.cache_data.clear()
+            st.success("缓存已清空")
+    with c2:
+        if st.button("清空聊天"):
+            st.session_state.chat_history = []
+            st.success("聊天已清空")
+
+    with st.expander("📖 指标说明"):
+        st.markdown(
+            """
+- 均线：趋势方向（多头排列 MA5>MA10>MA20）
+- ADX/DI：趋势强度
+- MACD：动量与拐点
+- RSI/MFI：超买超卖
+- CMF/OBV：资金流与背离
+- ATR：波动度（止损基础）
+- 风险控制：先定止损，再定仓位
+"""
+        )
+
+# =========================
+# 主布局
+# =========================
+left_col, right_col = st.columns([2.2, 1], gap="large")
+
+with left_col:
+    run_btn = st.button("🚀 执行深度洞察", use_container_width=True)
+
+    if run_btn:
+        with st.spinner("正在解析量价结构与资金行为..."):
+            source = "akshare" if data_source.startswith("akshare") else "yfinance"
+            notes = []
+
+            stock_name, pe, pb = get_stock_info(ticker_input, source=source)
+
+            df_d_raw, n1 = get_data(ticker_input, period_select, "1d", source=source)
+            df_w_raw, n2 = get_data(ticker_input, period_select, "1wk", source=source)
+            df_h_raw, n3 = get_data(ticker_input, "1mo", "60m", source=source)
+            notes.extend(n1 + n2 + n3)
+
+            if (df_w_raw is None or len(df_w_raw) < 20) and df_d_raw is not None and len(df_d_raw) >= 80:
+                df_w_raw = resample_to_weekly(df_d_raw)
+                notes.append("周线使用日线重采样生成。")
+
+            df_d = add_advanced_indicators(df_d_raw) if df_d_raw is not None else None
+            df_w = add_advanced_indicators(df_w_raw) if df_w_raw is not None else None
+            df_h = add_advanced_indicators(df_h_raw) if df_h_raw is not None else None
+
+            analysis = detailed_analysis(df_d, pe=pe, pb=pb) if df_d is not None else None
+
             score_d = get_score(df_d)
-            score_w = get_score(df_w_raw) if df_w_raw is not None else 0
-            score_h = get_score(df_h_raw) if df_h_raw is not None else 0
-            avg_score = w_d * score_d + w_w * score_w + w_h * score_h
+            score_w = get_score(df_w) if df_w is not None else 0
+            score_h = get_score(df_h) if df_h is not None else 0
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("综合操盘评分", f"{avg_score:.1f}", delta=f"{score_d - 50:.1f}")
-            m2.metric("趋势定性", analysis['trend'])
-            m3.metric("量价结构", analysis['vpa_signal'])
-            m4.metric("RSI强弱", f"{analysis['rsi']:.1f}")
+            availability = {
+                "日线": df_d is not None and len(df_d) >= 20,
+                "周线": df_w is not None and len(df_w) >= 20,
+                "小时线": df_h is not None and len(df_h) >= 20,
+            }
+            scores = {"日线": score_d, "周线": score_w, "小时线": score_h}
+            weights = {"日线": w_d, "周线": w_w, "小时线": w_h}
 
-            if analysis['action_color'] == "success":
-                st.success(f"**【操盘建议】** {analysis['status']} —— {analysis['advice']}")
-            elif analysis['action_color'] == "warning":
-                st.warning(f"**【操盘建议】** {analysis['status']} —— {analysis['advice']}")
-            elif analysis['action_color'] == "error":
-                st.error(f"**【操盘建议】** {analysis['status']} —— {analysis['advice']}")
+            valid_keys = [k for k, ok in availability.items() if ok]
+            if valid_keys:
+                w_sum = sum(weights[k] for k in valid_keys)
+                if w_sum > 0:
+                    composite_score = sum(scores[k] * weights[k] for k in valid_keys) / w_sum
+                else:
+                    composite_score = float(np.mean([scores[k] for k in valid_keys]))
             else:
-                st.info(f"**【操盘建议】** {analysis['status']} —— {analysis['advice']}")
+                composite_score = 0.0
 
-            # 决策推导面板
-            st.markdown('<div class="section-title">🔍 决策推导过程</div>', unsafe_allow_html=True)
-            with st.expander("📈 **第一步：趋势判断（均线+MACD+ADX）**", expanded=True):
-                col_t1, col_t2 = st.columns(2)
-                with col_t1:
-                    st.write("**均线排列**")
-                    st.markdown(f"""
-- MA5: {analysis['ma5']:.2f}
-- MA10: {analysis['ma10']:.2f}
-- MA20: {analysis['ma20']:.2f}
-- MA60: {analysis['ma60']:.2f}
-- MA120: {analysis['ma120']:.2f}
-- 当前价: {analysis['price']:.2f}
-                    """)
-                    st.write(f"**排列状态**：{'多头排列' if analysis['ma5']>analysis['ma10']>analysis['ma20'] else '非多头排列'}")
-                with col_t2:
-                    st.write("**趋势强度**")
-                    st.markdown(f"""
-- ADX: {analysis['adx']:.1f} (>25为强趋势)
-- +DI: {analysis['plus_di']:.1f}
-- -DI: {analysis['minus_di']:.1f}
-- 结论: {analysis['trend_strength']} {analysis['trend']}
-- 得分: {analysis['trend_score']}/30
-                    """)
-                    st.write("**MACD**")
-                    st.markdown(f"""
-- DIF: {analysis['macd']:.3f}
-- DEA: {analysis['macd_signal']:.3f}
-- 柱状线: {analysis['macd_hist']:.3f}
-- 状态: {'金叉' if analysis['macd']>analysis['macd_signal'] else '死叉'}
-                    """)
+            st.session_state.analysis_result = {
+                "ticker": ticker_input,
+                "stock_name": stock_name,
+                "analysis": analysis,
+                "df_d": df_d,
+                "scores": scores,
+                "weights": weights,
+                "availability": availability,
+                "composite_score": composite_score,
+                "notes": list(dict.fromkeys(notes)),
+                "source": source,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            st.session_state.ai_report_text = ""
 
-            with st.expander("💹 **第二步：量价组合信号**", expanded=False):
-                if analysis['volume_price_signals']:
-                    for sig in analysis['volume_price_signals']:
-                        st.write(f"- {sig}")
-                else:
-                    st.write("无特殊量价信号")
+    result = st.session_state.get("analysis_result")
 
-            with st.expander("📊 **第三步：RSI+乖离率（超买超卖）**", expanded=False):
-                st.write(f"RSI: {analysis['rsi']:.1f} — {analysis['rsi_status']}")
-                st.write(f"乖离率(BIAS): {analysis['bias']:.2f}% — {analysis['bias_status']}")
-
-            with st.expander("💰 **第四步：资金流向（CMF+MFI+OBV）**", expanded=False):
-                st.write(f"CMF: {analysis['cmf']:.3f} ( >0.1流入，<-0.1流出 )")
-                st.write(f"MFI: {analysis['mfi']:.1f} ( >70超买，<30超卖 )")
-                st.write(f"OBV背离: {analysis['obv_div']}")
-                st.write(f"详情: {analysis['money_detail']}")
-
-            with st.expander("📐 **第五步：技术形态识别**", expanded=False):
-                st.write("**K线组合**")
-                if analysis['candle_patterns']:
-                    for pat in analysis['candle_patterns']:
-                        st.write(f"- {pat}")
-                else:
-                    st.write("无明显K线形态")
-                st.write("**价格形态**")
-                if analysis['price_patterns']:
-                    for pat in analysis['price_patterns']:
-                        st.write(f"- {pat}")
-                else:
-                    st.write("无明显价格形态")
-
-            with st.expander("⚠️ **第六步：背离信号**", expanded=False):
-                st.write(f"MACD背离: {analysis['macd_divergence']}")
-                st.write(f"RSI背离: {analysis['rsi_divergence']}")
-                st.write(f"OBV背离: {analysis['obv_div']}")
-
-            with st.expander("🛡️ **第七步：风险与支撑点**", expanded=False):
-                st.write(f"关键支撑位: ¥{analysis['support']:.2f}")
-                st.write(f"关键压力位: ¥{analysis['resistance']:.2f}")
-                st.write(f"止损位: ¥{analysis['stop_loss']:.2f} (基于支撑和ATR)")
-                st.write(f"目标位: ¥{analysis['take_profit']:.2f}")
-                st.write(f"盈亏比: {analysis['risk_reward']:.2f}")
-                st.write(f"建议仓位: {analysis['position_size']:.0%}")
-                st.write(f"筹码集中度: {analysis['chip_concentration']}")
-
-            # 综合判断逻辑（人话版）
-            st.markdown('<div class="section-title">🧠 综合判断逻辑（人话版）</div>', unsafe_allow_html=True)
-            st.markdown(f"""
-**先看趋势**：{analysis['trend']}（{analysis['trend_strength']}，MACD{'金叉' if analysis['macd']>analysis['macd_signal'] else '死叉'}）
-
-**看短期热冷**：RSI {analysis['rsi']:.1f}（{analysis['rsi_status']}），乖离率{analysis['bias']:.2f}%（{analysis['bias_status']}）
-
-**看动力**：成交量{analysis['vpa_signal']}，量比{analysis['vol_ratio']:.2f}，OBV{analysis['obv_div']}，CMF={analysis['cmf']:.2f}，MFI={analysis['mfi']:.1f}
-
-**看稳定性**：筹码{analysis['chip_concentration']}，关键支撑¥{analysis['support']:.2f}
-
-**技术形态**：K线{', '.join(analysis['candle_patterns']) if analysis['candle_patterns'] else '无明显信号'}，价格形态{', '.join(analysis['price_patterns']) if analysis['price_patterns'] else '无'}
-
-**背离信号**：MACD{analysis['macd_divergence']}，RSI{analysis['rsi_divergence']}，OBV{analysis['obv_div']}
-
-**设置止损**：建议止损¥{analysis['stop_loss']:.2f}，目标¥{analysis['take_profit']:.2f}，盈亏比{analysis['risk_reward']:.2f}
-
-**最终建议**：{analysis['advice']}
-""")
-
-            # AI 分析区块
-            if enable_ai:
-                st.markdown('<div class="section-title">🤖 AI 智能分析报告</div>', unsafe_allow_html=True)
-                if ai_api_key and ai_api_key != "<AIHUBMIX_API_KEY>":
-                    with st.spinner("AI 正在深度思考..."):
-                        ai_result = ai_analysis(analysis, ticker_input, stock_name, ai_api_key, ai_base_url, ai_model)
-                    st.markdown(ai_result)
-                else:
-                    st.warning("请填写有效的 API Key 以启用 AI 分析。")
-
-            # 图表
-            st.markdown('<div class="section-title">📈 量价图谱</div>', unsafe_allow_html=True)
-            days_map = {"1mo": 30, "3mo": 90, "6mo": 180, "1y": 252, "2y": 504, "5y": 1260}
-            display_df = df_d.tail(days_map.get(period_select, 252))
-
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-            fig.add_trace(go.Candlestick(x=display_df.index, open=display_df["Open"], high=display_df["High"],
-                                         low=display_df["Low"], close=display_df["Close"], name="K线"), row=1, col=1)
-            for ma, color in zip(["MA5", "MA20", "MA60"], ["#6366f1", "#f59e0b", "#10b981"]):
-                if ma in display_df.columns:
-                    fig.add_trace(go.Scatter(x=display_df.index, y=display_df[ma], name=ma, line=dict(width=1.5, color=color)), row=1, col=1)
-
-            v_colors = ['#dc2626' if display_df.iloc[i]['Close'] >= display_df.iloc[i]['Open'] else '#16a34a' for i in range(len(display_df))]
-            fig.add_trace(go.Bar(x=display_df.index, y=display_df["Volume"], name="成交量", marker_color=v_colors), row=2, col=1)
-            if "VOL_MA20" in display_df.columns:
-                fig.add_trace(go.Scatter(x=display_df.index, y=display_df["VOL_MA20"], name="量均线", line=dict(color="#f59e0b")), row=2, col=1)
-
-            fig.update_layout(height=800, template="plotly_white", showlegend=True, xaxis_rangeslider_visible=False,
-                              margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.caption("💡 数据缓存1小时，如需最新数据请等待或重启应用。")
+    if not result:
+        st.info("👈 在左侧输入代码后点击 **执行深度洞察**。")
     else:
-        st.warning("数据不足（至少需要20个交易日），请尝试其他标的或稍后再试。")
-else:
-    st.info("👈 在左侧控制台输入代码开始分析。")
+        analysis = result.get("analysis")
+        if analysis is None:
+            st.warning("日线数据不足，建议更换标的或拉长周期后重试（至少约35根K线）。")
+            if result.get("notes"):
+                for note in result["notes"]:
+                    st.caption(f"⚠️ {note}")
+        else:
+            up_color, down_color = market_colors(result["ticker"])
+            chg_color = up_color if analysis["change"] >= 0 else down_color
+            pe_txt = "N/A" if analysis["pe"] is None else f"{analysis['pe']:.2f}"
+            pb_txt = "N/A" if analysis["pb"] is None else f"{analysis['pb']:.2f}"
+
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="stock-name">{result["stock_name"]} ({result["ticker"]}) | 数据源：{result["source"]} | {result["timestamp"]}</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div class="price-tag">¥{analysis["price"]:.2f} <span style="font-size:1.35rem;color:{chg_color};">{analysis["change"]:+.2f}%</span></div>',
+                unsafe_allow_html=True,
+            )
+            st.write(
+                f"成交量：{analysis['volume']:,.0f} | 20日均量：{analysis['vol_ma20']:,.0f} | 量比：{analysis['vol_ratio']:.2f} | PE：{pe_txt} | PB：{pb_txt}"
+            )
+            st.write(f"筹码状态：{analysis['chip_concentration']}")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            if result.get("notes"):
+                for note in result["notes"]:
+                    st.caption(f"⚠️ {note}")
+
+            tab1, tab2, tab3, tab4 = st.tabs(["📌 交易结论", "🔍 决策推导", "📈 量价图谱", "🤖 AI报告"])
+
+            with tab1:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("综合操盘评分", f"{result['composite_score']:.1f}")
+                m2.metric("趋势", analysis["trend"])
+                m3.metric("量价结构", analysis["vpa_signal"])
+                m4.metric("总评分", f"{analysis['total_score']} / 100")
+
+                s1, s2, s3 = st.columns(3)
+                s1.metric("日线评分", f"{result['scores']['日线']}" if result["availability"]["日线"] else "N/A")
+                s2.metric("周线评分", f"{result['scores']['周线']}" if result["availability"]["周线"] else "N/A")
+                s3.metric("小时评分", f"{result['scores']['小时线']}" if result["availability"]["小时线"] else "N/A")
+
+                if analysis["action_color"] == "success":
+                    st.success(f"**{analysis['status']}**｜{analysis['advice']}")
+                elif analysis["action_color"] == "warning":
+                    st.warning(f"**{analysis['status']}**｜{analysis['advice']}")
+                elif analysis["action_color"] == "error":
+                    st.error(f"**{analysis['status']}**｜{analysis['advice']}")
+                else:
+                    st.info(f"**{analysis['status']}**｜{analysis['advice']}")
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("支撑位", f"{analysis['support']:.2f}")
+                c2.metric("压力位", f"{analysis['resistance']:.2f}")
+                c3.metric("止损位", f"{analysis['stop_loss']:.2f}")
+                c4.metric("目标位", f"{analysis['take_profit']:.2f}")
+
+                st.write(
+                    f"盈亏比：**{analysis['risk_reward']:.2f}** ｜ 建议仓位上限：**{analysis['position_size']:.0%}**"
+                )
+
+            with tab2:
+                st.markdown('<div class="section-title">决策推导过程</div>', unsafe_allow_html=True)
+
+                with st.expander("1) 趋势判断（均线 + ADX + MACD）", expanded=True):
+                    st.write(
+                        f"- MA5/10/20/60/120：{analysis['ma5']:.2f} / {analysis['ma10']:.2f} / {analysis['ma20']:.2f} / {analysis['ma60']:.2f} / {analysis['ma120']:.2f}"
+                    )
+                    st.write(f"- 趋势：{analysis['trend_strength']} · {analysis['trend']}")
+                    st.write(f"- ADX={analysis['adx']:.1f}，+DI={analysis['plus_di']:.1f}，-DI={analysis['minus_di']:.1f}")
+                    st.write(
+                        f"- MACD：DIF={analysis['macd']:.3f}, DEA={analysis['macd_signal']:.3f}, 柱={analysis['macd_hist']:.3f}"
+                    )
+                    st.write(f"- 趋势得分：{analysis['trend_score']}/30")
+
+                with st.expander("2) 量价组合"):
+                    st.write(f"- 当前信号：**{analysis['vpa_signal']}**")
+                    st.write(f"- 解释：{analysis['vpa_detail']}")
+                    if analysis["volume_price_signals"]:
+                        for sig in analysis["volume_price_signals"]:
+                            st.write(f"  - {sig}")
+
+                with st.expander("3) 超买超卖（RSI + BIAS）"):
+                    st.write(f"- RSI：{analysis['rsi']:.1f}（{analysis['rsi_status']}）")
+                    st.write(f"- BIAS：{analysis['bias']:.2f}%（{analysis['bias_status']}）")
+                    st.write(f"- RSI得分：{analysis['rsi_score']}/15，BIAS得分：{analysis['bias_score']}/10")
+
+                with st.expander("4) 资金流向（CMF + MFI + OBV）"):
+                    st.write(f"- CMF：{analysis['cmf']:.3f}")
+                    st.write(f"- MFI：{analysis['mfi']:.1f}")
+                    st.write(f"- OBV背离：{analysis['obv_div']}")
+                    st.write(f"- 资金结论：{analysis['money_status']}（{analysis['money_score']}/20）")
+                    st.write(f"- 细节：{analysis['money_detail']}")
+
+                with st.expander("5) 形态与背离"):
+                    st.write("**K线形态**")
+                    if analysis["candle_patterns"]:
+                        for p in analysis["candle_patterns"]:
+                            st.write(f"- {p}")
+                    else:
+                        st.write("- 无明显K线形态")
+
+                    st.write("**价格形态**")
+                    if analysis["price_patterns"]:
+                        for p in analysis["price_patterns"]:
+                            st.write(f"- {p}")
+                    else:
+                        st.write("- 无明显价格形态")
+
+                    st.write(
+                        f"**背离**：MACD={analysis['macd_divergence']} ｜ RSI={analysis['rsi_divergence']} ｜ {analysis['obv_div']}"
+                    )
+
+            with tab3:
+                fig = build_chart(
+                    result["df_d"],
+                    period_select,
+                    result["ticker"],
+                    support=analysis["support"],
+                    resistance=analysis["resistance"],
+                )
+                if fig is not None:
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.caption("数据已缓存（默认15分钟~1小时，取决于数据源）。")
+                else:
+                    st.warning("图表数据不足，无法绘制。")
+
+            with tab4:
+                if not ai_api_key:
+                    st.info("请先在左侧输入 API Key。")
+                else:
+                    if st.button("生成 AI 深度报告", key="btn_generate_ai_report", use_container_width=True):
+                        with st.spinner("AI 正在综合评估..."):
+                            st.session_state.ai_report_text = ai_analysis(
+                                analysis=analysis,
+                                ticker=result["ticker"],
+                                stock_name=result["stock_name"],
+                                api_key=ai_api_key,
+                                base_url=ai_base_url,
+                                model=ai_report_model,
+                            )
+
+                    ai_text = st.session_state.get("ai_report_text", "")
+                    if ai_text:
+                        st.markdown(ai_text)
+
+with right_col:
+    st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
+    st.subheader("💬 AI 自由问答助手")
+    st.caption("支持金融、编程、日常问题。")
+
+    chat_model = st.selectbox(
+        "聊天模型",
+        ["gpt-5.4-high", "gpt-5.3-codex", "gpt-4.1", "o3-mini", "gpt-5.2"],
+        index=0,
+        key="chat_model_selector",
+    )
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_q = st.chat_input("输入你的问题...")
+    if user_q:
+        st.session_state.chat_history.append({"role": "user", "content": user_q})
+        with st.chat_message("user"):
+            st.markdown(user_q)
+
+        with st.chat_message("assistant"):
+            with st.spinner("思考中..."):
+                resp = chat_ai(
+                    user_message=user_q,
+                    history=st.session_state.chat_history[:-1],
+                    model=chat_model,
+                    api_key=ai_api_key,
+                    base_url=ai_base_url,
+                )
+                st.markdown(resp)
+
+        st.session_state.chat_history.append({"role": "assistant", "content": resp})
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.caption("免责声明：本工具仅用于研究与学习，不构成任何投资建议。")
