@@ -1778,22 +1778,24 @@ with left_col:
                 st.write(
                     f"背离信号：MACD={analysis['macd_divergence']}，RSI={analysis['rsi_divergence']}，{analysis['obv_div']}。")
 
-            # 财务趋势展示（如果启用且数据存在）
-            if enable_fundamental and result.get("fund_trend") and result["fund_trend"].get("periods"):
+            # 财务趋势展示（如果启用且数据存在，否则显示提示）
+            if enable_fundamental:
                 with st.expander("📊 财务趋势分析（最近4个报告期）", expanded=False):
-                    ft = result["fund_trend"]
-                    periods = ft["periods"]
-                    # 构建表格
-                    data = {
-                        "报告期": periods,
-                        "营收TTM（亿元）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["revenue"]],
-                        "净利润TTM（亿元）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["net_income"]],
-                        "ROE（%）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["roe"]],
-                        "资产负债率（%）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["debt_ratio"]],
-                    }
-                    df_fund = pd.DataFrame(data)
-                    st.dataframe(df_fund, use_container_width=True)
-                    st.write(f"**趋势总结**：{ft['trend_summary']}")
+                    ft = result.get("fund_trend")
+                    if ft and ft.get("periods"):
+                        periods = ft["periods"]
+                        data = {
+                            "报告期": periods,
+                            "营收TTM（亿元）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["revenue"]],
+                            "净利润TTM（亿元）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["net_income"]],
+                            "ROE（%）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["roe"]],
+                            "资产负债率（%）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["debt_ratio"]],
+                        }
+                        df_fund = pd.DataFrame(data)
+                        st.dataframe(df_fund, use_container_width=True)
+                        st.write(f"**趋势总结**：{ft['trend_summary']}")
+                    else:
+                        st.info("暂无财务数据，可能是数据源不支持或获取失败。请检查股票代码或网络，或稍后重试。")
 
             # 量价图谱（日线）
             with st.expander("📈 量价图谱（日线）", expanded=True):
