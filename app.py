@@ -23,7 +23,6 @@ PERIOD_DAYS = {
     "5y": 1260,
 }
 NEW_TOKEN_MODEL_PREFIX = ("gpt-5", "gpt-4.1", "o3", "o4")
-# 移除硬编码的 ai_report_model，改为在侧边栏动态选择
 
 # =========================
 # 页面配置
@@ -192,11 +191,13 @@ st.markdown("""
 st.title("🦅 交易员：量价趋势洞察系统")
 st.caption("核心原则：趋势定方向，量价定强弱，结构定买卖，风控定仓位。")
 
+
 # =========================
-# 工具函数（与原代码一致，此处保留完整）
+# 工具函数
 # =========================
 def is_a_share_code(ticker: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", ticker.strip().upper()))
+
 
 def normalize_ticker_for_yf(ticker: str) -> str:
     t = ticker.strip().upper()
@@ -207,17 +208,18 @@ def normalize_ticker_for_yf(ticker: str) -> str:
             return f"{t}.SZ"
     return t
 
+
 def market_colors(ticker: str):
     if is_a_share_code(ticker):
         return "#dc2626", "#16a34a"
     return "#16a34a", "#dc2626"
 
+
 def use_max_completion_tokens(model: str) -> bool:
-    # 对于 deepseek 模型不使用 max_completion_tokens
-    # 注意：这里判断的是模型名称中是否包含 'deepseek'，而不是硬编码常量
     if "deepseek" in model.lower():
         return False
     return isinstance(model, str) and model.startswith(NEW_TOKEN_MODEL_PREFIX)
+
 
 def standardize_ohlcv(df: pd.DataFrame):
     if df is None or df.empty:
@@ -251,6 +253,7 @@ def standardize_ohlcv(df: pd.DataFrame):
         out.index = out.index.tz_localize(None)
     return out
 
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_stock_info(ticker: str, source: str = "yfinance"):
     name = ticker.strip().upper()
@@ -275,6 +278,7 @@ def get_stock_info(ticker: str, source: str = "yfinance"):
         pass
     return name, pe, pb
 
+
 @st.cache_data(ttl=900, show_spinner=False)
 def get_data_yfinance(ticker: str, period: str = "1y", interval: str = "1d"):
     try:
@@ -286,6 +290,7 @@ def get_data_yfinance(ticker: str, period: str = "1y", interval: str = "1d"):
         return standardize_ohlcv(raw)
     except Exception:
         return None
+
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_data_akshare(ticker: str, period: str = "1y", interval: str = "1d"):
@@ -335,6 +340,7 @@ def get_data_akshare(ticker: str, period: str = "1y", interval: str = "1d"):
         return df.tail(320)
     return None
 
+
 def get_data(ticker: str, period: str = "1y", interval: str = "1d", source: str = "yfinance"):
     notes = []
     df = None
@@ -358,6 +364,7 @@ def get_data(ticker: str, period: str = "1y", interval: str = "1d", source: str 
         return df, notes
     return None, notes
 
+
 def resample_to_weekly(df_daily: pd.DataFrame):
     if df_daily is None or df_daily.empty:
         return None
@@ -366,6 +373,7 @@ def resample_to_weekly(df_daily: pd.DataFrame):
         "Close": "last", "Volume": "sum",
     }).dropna())
     return w
+
 
 # ----- 技术指标函数（完整保留）-----
 def add_advanced_indicators(df: pd.DataFrame):
@@ -391,8 +399,8 @@ def add_advanced_indicators(df: pd.DataFrame):
     delta = close.diff()
     up = delta.clip(lower=0)
     down = -delta.clip(upper=0)
-    avg_up = up.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
-    avg_down = down.ewm(alpha=1/14, adjust=False, min_periods=14).mean()
+    avg_up = up.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    avg_down = down.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     rs = avg_up / avg_down.replace(0, np.nan)
     out["RSI"] = (100 - 100 / (1 + rs)).clip(0, 100)
     out["BIAS"] = (close - out["MA20"]) / out["MA20"] * 100
@@ -428,6 +436,7 @@ def add_advanced_indicators(df: pd.DataFrame):
     out.replace([np.inf, -np.inf], np.nan, inplace=True)
     return out
 
+
 def find_support_resistance(df: pd.DataFrame, lookback: int = 80):
     recent = df.tail(lookback)
     highs = recent["High"]
@@ -438,8 +447,8 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 80):
 
     if len(recent) >= 11:
         for i in range(5, len(recent) - 5):
-            h_slice = highs.iloc[i - 5 : i + 6]
-            l_slice = lows.iloc[i - 5 : i + 6]
+            h_slice = highs.iloc[i - 5: i + 6]
+            l_slice = lows.iloc[i - 5: i + 6]
             if highs.iloc[i] == h_slice.max():
                 resistance_candidates.append(highs.iloc[i])
             if lows.iloc[i] == l_slice.min():
@@ -448,6 +457,7 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 80):
     resistance = np.mean(resistance_candidates[-3:]) if resistance_candidates else highs.tail(20).max()
     support = np.mean(support_candidates[-3:]) if support_candidates else lows.tail(20).min()
     return float(support), float(resistance)
+
 
 def volume_price_signals(df: pd.DataFrame):
     signals = []
@@ -478,6 +488,7 @@ def volume_price_signals(df: pd.DataFrame):
     )
     return signals
 
+
 def detect_candle_patterns(df: pd.DataFrame):
     patterns = []
     if df is None or len(df) < 2:
@@ -503,6 +514,7 @@ def detect_candle_patterns(df: pd.DataFrame):
             patterns.append("看跌吞没")
 
     return patterns
+
 
 def detect_price_patterns(df: pd.DataFrame, lookback: int = 30):
     patterns = []
@@ -534,6 +546,7 @@ def detect_price_patterns(df: pd.DataFrame, lookback: int = 30):
 
     return patterns
 
+
 def _last_two_pivots(series: pd.Series, mode: str = "high", window: int = 5):
     roll = series.rolling(window, center=True, min_periods=window)
     if mode == "high":
@@ -544,6 +557,7 @@ def _last_two_pivots(series: pd.Series, mode: str = "high", window: int = 5):
     if len(pivots) >= 2:
         return pivots.index[-2], pivots.index[-1]
     return None, None
+
 
 def detect_divergence(price: pd.Series, indicator: pd.Series, lookback: int = 30):
     p = price.tail(lookback).dropna()
@@ -565,14 +579,18 @@ def detect_divergence(price: pd.Series, indicator: pd.Series, lookback: int = 30
 
     return "无背离"
 
+
 def detect_macd_divergence(df: pd.DataFrame, lookback: int = 30):
     return detect_divergence(df["Close"], df["MACD"], lookback=lookback)
+
 
 def detect_rsi_divergence(df: pd.DataFrame, lookback: int = 30):
     return detect_divergence(df["Close"], df["RSI"], lookback=lookback)
 
+
 def detect_obv_divergence(df: pd.DataFrame, lookback: int = 30):
     return detect_divergence(df["Close"], df["OBV"], lookback=lookback)
+
 
 def describe_chip_concentration(df: pd.DataFrame):
     vol = df["Volume"].tail(20)
@@ -591,7 +609,11 @@ def describe_chip_concentration(df: pd.DataFrame):
         return "筹码分散，波动可能较大"
     return "筹码中性，波动中等"
 
-def detailed_analysis(df: pd.DataFrame, pe=None, pb=None):
+
+def detailed_analysis(df: pd.DataFrame, pe=None, pb=None, atr_multiplier: float = 1.8):
+    """
+    通用分析函数，支持传入不同的ATR乘数（短期使用更小的乘数）
+    """
     if df is None or len(df) < 35:
         return None
 
@@ -757,9 +779,10 @@ def detailed_analysis(df: pd.DataFrame, pe=None, pb=None):
     if atr <= 0:
         atr = price * 0.02
 
-    stop_loss = min(support * 0.98, price - 1.8 * atr)
+    # 使用传入的乘数计算止损/目标
+    stop_loss = min(support * 0.98, price - atr_multiplier * atr)
     if stop_loss >= price:
-        stop_loss = price - 1.8 * atr
+        stop_loss = price - atr_multiplier * atr
 
     take_profit = max(resistance * 0.99, price + 2.2 * atr)
     if take_profit <= price:
@@ -845,6 +868,7 @@ def detailed_analysis(df: pd.DataFrame, pe=None, pb=None):
         "rsi_divergence": detect_rsi_divergence(df),
     }
 
+
 def get_score(df: pd.DataFrame):
     if df is None or len(df) < 30:
         return 0
@@ -889,6 +913,7 @@ def get_score(df: pd.DataFrame):
         score += 10
 
     return int(np.clip(score, 0, 100))
+
 
 def build_chart(df: pd.DataFrame, period: str, ticker: str, support=None, resistance=None):
     if df is None or df.empty:
@@ -1016,12 +1041,289 @@ def build_chart(df: pd.DataFrame, period: str, ticker: str, support=None, resist
 
     return fig
 
-def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base_url: str, model: str):
+
+def build_hourly_chart(df: pd.DataFrame, ticker: str, support=None, resistance=None):
+    """构建小时线图表（简化版）"""
+    if df is None or df.empty:
+        return None
+
+    show_df = df.tail(200).copy()
+    if show_df.empty:
+        return None
+
+    up_color, down_color = market_colors(ticker)
+    vol_colors = np.where(show_df["Close"] >= show_df["Open"], up_color, down_color)
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        vertical_spacing=0.05, row_heights=[0.7, 0.3]
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=show_df.index, open=show_df["Open"], high=show_df["High"],
+            low=show_df["Low"], close=show_df["Close"],
+            name="小时K线",
+            increasing_line_color=up_color,
+            decreasing_line_color=down_color,
+        ),
+        row=1, col=1,
+    )
+
+    # 添加简单均线
+    for ma, color in [("MA5", "#6366f1"), ("MA20", "#f59e0b")]:
+        if ma in show_df.columns:
+            fig.add_trace(
+                go.Scatter(x=show_df.index, y=show_df[ma], name=ma, line=dict(color=color, width=1.2)),
+                row=1, col=1,
+            )
+
+    fig.add_trace(
+        go.Bar(x=show_df.index, y=show_df["Volume"], name="成交量", marker_color=vol_colors, opacity=0.7),
+        row=2, col=1,
+    )
+
+    fig.update_layout(height=500, template="plotly_white", margin=dict(l=8, r=8, t=20, b=8))
+    return fig
+
+
+# =========================
+# 新增：基本面趋势分析函数
+# =========================
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_fundamental_trend(ticker: str, source: str = "yfinance"):
+    """
+    获取最近4个报告期的关键财务指标，并计算趋势
+    返回一个字典，包含：
+    - periods: 报告期列表（字符串）
+    - revenue: 营收（TTM）列表
+    - net_income: 净利润（TTM）列表
+    - roe: ROE 列表
+    - gross_margin: 毛利率列表
+    - debt_ratio: 资产负债率列表
+    - trend_summary: 趋势描述文本
+    """
+    result = {
+        "periods": [],
+        "revenue": [],
+        "net_income": [],
+        "roe": [],
+        "gross_margin": [],
+        "debt_ratio": [],
+        "trend_summary": "",
+    }
+
+    code = ticker.strip().upper()
+    if source == "akshare" and is_a_share_code(code):
+        try:
+            import akshare as ak
+            # 获取财务指标（多个报告期）
+            df = ak.stock_financial_analysis_indicator(symbol=code)
+            if df is None or df.empty:
+                return result
+
+            # 取最近4个报告期（按日期倒序）
+            df = df.sort_values("日期", ascending=False).head(4)
+            for _, row in df.iterrows():
+                result["periods"].append(
+                    row["日期"].strftime("%Y-%m") if isinstance(row["日期"], pd.Timestamp) else str(row["日期"]))
+                result["revenue"].append(row.get("营业总收入", np.nan))
+                result["net_income"].append(row.get("净利润", np.nan))
+                result["roe"].append(row.get("净资产收益率", np.nan))
+                result["gross_margin"].append(row.get("销售毛利率", np.nan))
+                result["debt_ratio"].append(row.get("资产负债率", np.nan))
+
+            # 计算趋势描述
+            trend_summary = _calculate_trend_summary(result)
+            result["trend_summary"] = trend_summary
+            return result
+        except Exception as e:
+            st.warning(f"获取A股财务趋势数据失败：{e}")
+            return result
+
+    else:
+        # 美股/港股：使用 yfinance 的季度财务报表
+        try:
+            ticker_yf = yf.Ticker(normalize_ticker_for_yf(ticker))
+            # 获取季度财务数据（最近4个季度）
+            financials = ticker_yf.quarterly_financials
+            balance = ticker_yf.quarterly_balance_sheet
+            if financials is None or financials.empty:
+                return result
+
+            # 取最近4个季度
+            fin = financials.iloc[:, :4]
+            bal = balance.iloc[:, :4] if balance is not None and not balance.empty else None
+
+            # 提取营收、净利润
+            revenue_ttm = []
+            net_income_ttm = []
+            periods = []
+            # 计算TTM：最近四个季度之和
+            for i in range(4):
+                if i + 3 < len(fin.columns):
+                    rev = fin.loc[
+                        "Total Revenue" if "Total Revenue" in fin.index else "Revenue", fin.columns[i:i + 4]].sum()
+                    net = fin.loc[
+                        "Net Income" if "Net Income" in fin.index else "NetIncome", fin.columns[i:i + 4]].sum()
+                    revenue_ttm.append(rev)
+                    net_income_ttm.append(net)
+                    periods.append(fin.columns[i + 3].strftime("%Y-%m"))
+
+            # 提取 ROE、毛利率、资产负债率
+            roe_list = []
+            gross_margin_list = []
+            debt_ratio_list = []
+            for i in range(len(periods)):
+                # ROE = 净利润 / 股东权益（需获取最近一期资产负债表）
+                if bal is not None and i < len(bal.columns):
+                    equity = bal.loc[
+                        "Total Equity Gross Minority Interest" if "Total Equity Gross Minority Interest" in bal.index else "Stockholders Equity",
+                        bal.columns[i]]
+                    if equity != 0 and not np.isnan(equity):
+                        roe_list.append(net_income_ttm[i] / equity * 100)
+                    else:
+                        roe_list.append(np.nan)
+                else:
+                    roe_list.append(np.nan)
+
+                # 毛利率 = (营收 - 成本) / 营收，需要从利润表中获取成本
+                # 简单起见，直接从利润表获取毛利率（如果有）
+                # yfinance 的利润表没有直接毛利率，故暂时留空
+                gross_margin_list.append(np.nan)
+
+                # 资产负债率 = 总负债 / 总资产
+                if bal is not None and i < len(bal.columns):
+                    total_liab = bal.loc[
+                        "Total Liabilities Net Minority Interest" if "Total Liabilities Net Minority Interest" in bal.index else "Total Liabilities",
+                        bal.columns[i]]
+                    total_assets = bal.loc["Total Assets", bal.columns[i]]
+                    if total_assets != 0 and not np.isnan(total_assets):
+                        debt_ratio_list.append(total_liab / total_assets * 100)
+                    else:
+                        debt_ratio_list.append(np.nan)
+                else:
+                    debt_ratio_list.append(np.nan)
+
+            result["periods"] = periods
+            result["revenue"] = revenue_ttm
+            result["net_income"] = net_income_ttm
+            result["roe"] = roe_list
+            result["gross_margin"] = gross_margin_list
+            result["debt_ratio"] = debt_ratio_list
+
+            trend_summary = _calculate_trend_summary(result)
+            result["trend_summary"] = trend_summary
+            return result
+        except Exception as e:
+            st.warning(f"获取美股财务趋势数据失败：{e}")
+            return result
+
+
+def _calculate_trend_summary(fund_data):
+    """根据多期数据生成趋势描述文本"""
+    revs = fund_data["revenue"]
+    nets = fund_data["net_income"]
+    roes = fund_data["roe"]
+
+    # 过滤掉 NaN
+    rev_clean = [v for v in revs if not pd.isna(v)]
+    net_clean = [v for v in nets if not pd.isna(v)]
+    roe_clean = [v for v in roes if not pd.isna(v)]
+
+    summary_parts = []
+
+    if len(rev_clean) >= 2:
+        # 计算连续增长率
+        rev_growth = [(rev_clean[i] - rev_clean[i - 1]) / rev_clean[i - 1] * 100 for i in range(1, len(rev_clean))]
+        if all(g > 0 for g in rev_growth):
+            summary_parts.append("营收连续增长，增速呈加速/平稳趋势")
+        elif any(g > 0 for g in rev_growth) and any(g < 0 for g in rev_growth):
+            summary_parts.append("营收增长不稳定，有波动")
+        else:
+            summary_parts.append("营收连续下滑，基本面承压")
+    else:
+        summary_parts.append("营收数据不足，无法判断趋势")
+
+    if len(net_clean) >= 2:
+        net_growth = [(net_clean[i] - net_clean[i - 1]) / net_clean[i - 1] * 100 for i in range(1, len(net_clean))]
+        if all(g > 0 for g in net_growth):
+            summary_parts.append("净利润连续增长，盈利能力改善")
+        elif any(g > 0 for g in net_growth) and any(g < 0 for g in net_growth):
+            summary_parts.append("净利润波动较大，盈利不稳定")
+        else:
+            summary_parts.append("净利润连续下滑，盈利恶化")
+    else:
+        summary_parts.append("净利润数据不足，无法判断趋势")
+
+    if len(roe_clean) >= 2:
+        if roe_clean[-1] > roe_clean[0]:
+            summary_parts.append("ROE趋势向上，股东回报增强")
+        elif roe_clean[-1] < roe_clean[0]:
+            summary_parts.append("ROE趋势向下，股东回报减弱")
+        else:
+            summary_parts.append("ROE保持平稳")
+    else:
+        summary_parts.append("ROE数据不足")
+
+    return "；".join(summary_parts)
+
+
+# =========================
+# AI 分析函数（增强版，包含基本面趋势）
+# =========================
+def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base_url: str, model: str, view: str,
+                extra_data: dict = None, fund_trend: dict = None):
+    """
+    增强版AI分析，根据视角注入多周期指标和基本面趋势
+    """
     pe_text = "N/A" if analysis["pe"] is None else f"{analysis['pe']:.2f}"
     pb_text = "N/A" if analysis["pb"] is None else f"{analysis['pb']:.2f}"
 
+    # 构建额外的指标描述
+    extra_desc = ""
+    if extra_data:
+        if "hourly" in extra_data:
+            h = extra_data["hourly"]
+            extra_desc += f"""
+【小时线指标（用于极短期/短期）】
+- 小时线最新价：{h.get('price', 'N/A')}
+- 小时线RSI：{h.get('rsi', 'N/A')}
+- 小时线MACD柱：{h.get('macd_hist', 'N/A')}
+- 小时线量比：{h.get('vol_ratio', 'N/A')}
+"""
+        if "weekly" in extra_data:
+            w = extra_data["weekly"]
+            extra_desc += f"""
+【周线指标（用于中长期）】
+- 周线最新价：{w.get('price', 'N/A')}
+- 周线RSI：{w.get('rsi', 'N/A')}
+- 周线MACD柱：{w.get('macd_hist', 'N/A')}
+- 周线MA20：{w.get('ma20', 'N/A')}
+"""
+
+    # 基本面趋势描述
+    fund_desc = ""
+    if fund_trend and fund_trend.get("periods"):
+        fund_desc = f"""
+【基本面趋势（基于最近{len(fund_trend['periods'])}个报告期）】
+- 报告期：{', '.join(fund_trend['periods'])}
+- 营收TTM（亿元）：{', '.join([f'{x:.2f}' if not pd.isna(x) else 'N/A' for x in fund_trend['revenue']])}
+- 净利润TTM（亿元）：{', '.join([f'{x:.2f}' if not pd.isna(x) else 'N/A' for x in fund_trend['net_income']])}
+- ROE（%）：{', '.join([f'{x:.2f}' if not pd.isna(x) else 'N/A' for x in fund_trend['roe']])}
+- 资产负债率（%）：{', '.join([f'{x:.2f}' if not pd.isna(x) else 'N/A' for x in fund_trend['debt_ratio']])}
+- 趋势总结：{fund_trend.get('trend_summary', '无足够数据')}
+"""
+
     prompt = f"""
-你是一位拥有20年实战经验的职业交易员，擅长量价分析、趋势跟踪和资金管理。请基于以下量化技术数据，对 {stock_name} ({ticker}) 输出一份专业交易分析报告。报告必须通俗易懂，避免枯燥的数字堆砌，要用交易员的语言解释每个指标的含义及其背后的市场心理。同时，报告必须完整，不能中断。
+    你是一位拥有20年实战经验的职业交易员，擅长量价分析、趋势跟踪和资金管理。本次分析请从 **{view}** 的角度出发，根据以下量化技术数据和基本面趋势，对 {stock_name} ({ticker}) 输出一份专业交易分析报告。
+
+    {view} 的含义：
+    - 极短期交易 (1-5天)：侧重捕捉日内/隔夜波动，必须关注小时线动能、日线量比、超买超卖，建议快进快出，严格止损。
+    - 短期交易 (1-4周)：侧重捕捉短期波动，关注小时线+日线动量，日线量比，超买超卖，建议持仓灵活。
+    - 中长期波段 (1-6个月)：侧重趋势方向和资金流向，关注周线趋势、日线均线排列，建议顺势持有。
+
+    报告必须通俗易懂，避免枯燥的数字堆砌，要用交易员的语言解释每个指标的含义及其背后的市场心理。同时，报告必须完整，不能中断。
 
 【当前市场状态】
 - 价格：{analysis['price']:.2f} 元，当日涨跌幅 {analysis['change']:+.2f}%
@@ -1040,6 +1342,9 @@ def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base
 - K线形态：{", ".join(analysis['candle_patterns']) if analysis['candle_patterns'] else "无"}
 - 价格形态：{", ".join(analysis['price_patterns']) if analysis['price_patterns'] else "无"}
 - 背离：MACD={analysis['macd_divergence']}，RSI={analysis['rsi_divergence']}
+
+{extra_desc}
+{fund_desc}
 
 【风险参数】
 - 关键支撑/压力：{analysis['support']:.2f} / {analysis['resistance']:.2f}
@@ -1065,7 +1370,6 @@ def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base
             ],
             "temperature": 0.6,
         }
-        # 对于 deepseek 模型，使用 max_tokens 而非 max_completion_tokens
         if use_max_completion_tokens(model):
             kwargs["max_completion_tokens"] = 3000
         else:
@@ -1074,6 +1378,7 @@ def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base
         return resp.choices[0].message.content
     except Exception as e:
         return f"⚠️ AI分析调用失败：{e}"
+
 
 def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url: str):
     if not api_key:
@@ -1123,22 +1428,45 @@ def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url
                 return f"⚠️ 聊天调用失败：{e2}"
         return f"⚠️ 聊天调用失败：{e1}"
 
+
 # =========================
 # 侧边栏配置
 # =========================
 with st.sidebar:
     st.header("🛠️ 交易控制台")
     ticker_input = st.text_input("标的代码（如 000001 / AAPL）", "000001").strip().upper()
-    period_select = st.selectbox("回测周期（显示长度）", list(PERIOD_DAYS.keys()), index=3)
 
-    st.subheader("📊 多周期权重")
-    w_d = st.slider("日线权重", 0.0, 1.0, 0.50, 0.05)
-    w_w = st.slider("周线权重", 0.0, 1.0, 0.30, 0.05)
-    w_h = st.slider("小时线权重", 0.0, 1.0, 0.20, 0.05)
-    total_w = w_d + w_w + w_h
-    if total_w > 0:
-        w_d, w_w, w_h = w_d / total_w, w_w / total_w, w_h / total_w
-    st.caption(f"归一化后：日线 {w_d:.0%} / 周线 {w_w:.0%} / 小时线 {w_h:.0%}")
+    # 视角选择
+    st.subheader("🎯 分析视角")
+    view = st.radio(
+        "选择当前分析的时间维度",
+        options=["极短期 (1-5天)", "短期 (1-4周)", "中长期 (1-6个月)"],
+        index=1,
+        help="极短期：日内/隔夜交易；短期：数周波段；中长期：数月趋势。"
+    )
+
+    # 根据视角自动确定默认周期和权重
+    if view == "极短期 (1-5天)":
+        default_period = "1mo"
+        w_d, w_w, w_h = 0.3, 0.0, 0.7
+        st.info("**极短期模式**：侧重小时线动能，日线辅助，止损严格。")
+    elif view == "短期 (1-4周)":
+        default_period = "3mo"
+        w_d, w_w, w_h = 0.6, 0.0, 0.4
+        st.info("**短期模式**：日线趋势+小时线动量，适合数周波段。")
+    else:
+        default_period = "1y"
+        w_d, w_w, w_h = 0.7, 0.3, 0.0
+        st.info("**中长期模式**：周线定方向，日线找买点。")
+
+    period_select = st.selectbox(
+        "回测周期（显示长度）",
+        list(PERIOD_DAYS.keys()),
+        index=list(PERIOD_DAYS.keys()).index(default_period),
+        help="日线图表显示多少条K线"
+    )
+
+    st.caption(f"当前权重：日线 {w_d:.0%} / 周线 {w_w:.0%} / 小时线 {w_h:.0%}")
 
     st.subheader("🗄️ 数据源")
     data_source = st.selectbox(
@@ -1147,22 +1475,25 @@ with st.sidebar:
         index=0,
     )
 
+    st.subheader("📊 基本面分析")
+    enable_fundamental = st.checkbox("启用基本面趋势分析", value=True,
+                                     help="获取最近4个报告期的财务数据，判断基本面趋势")
+    st.caption("财报数据变化慢，更新可能有延迟。")
+
     st.subheader("🤖 AI 配置")
     default_key = os.getenv("AI_API_KEY")
     ai_api_key = st.text_input("API Key", type="password", value=default_key)
     ai_base_url = st.text_input("Base URL", value="https://aihubmix.com/v1")
 
-    # 新增：AI报告模型选择
     ai_report_model = st.selectbox(
         "AI报告模型",
-        ["deepseek-v3.2", "deepseek-v3.2-speciale", "gpt-4.1-free", "gpt-4o-free", "gpt-4.1-mini-free", "gpt-4.1-nano-free"],
+        ["deepseek-v3.2", "deepseek-v3.2-speciale", "gpt-4.1-free", "gpt-4o-free", "gpt-4.1-mini-free",
+         "gpt-4.1-nano-free"],
         index=0,
         help="选择用于生成AI深度报告的模型，推荐 deepseek-v3.2-speciale"
     )
     enable_ai_report = st.checkbox("启用 AI 深度报告", value=True, help="使用所选模型生成分析报告")
-    st.caption(f"当前AI报告模型：{ai_report_model}")
 
-    # 聊天模型选择
     chat_model = st.selectbox(
         "聊天模型",
         ["gpt-4.1-free", "gpt-4.1-nano-free", "gpt-5.4-high", "gpt-5.3-codex", "gpt-4.1", "o3-mini", "gpt-5.2"],
@@ -1189,6 +1520,7 @@ with st.sidebar:
         - **CMF/OBV**：资金流与背离（正值为资金流入）  
         - **ATR**：波动度（止损基准）  
         - **风险控制**：先定止损，再定仓位
+        - **基本面趋势**：基于最近4个报告期的营收、净利润、ROE等数据判断趋势
         """)
 
 # =========================
@@ -1203,21 +1535,46 @@ with left_col:
             source = "akshare" if data_source.startswith("akshare") else "yfinance"
             notes = []
             stock_name, pe, pb = get_stock_info(ticker_input, source=source)
+
+            # 获取财务趋势数据（如果启用）
+            fund_trend = None
+            if enable_fundamental:
+                with st.spinner("正在获取财务趋势数据..."):
+                    fund_trend = get_fundamental_trend(ticker_input, source=source)
+
+            # 根据视角决定获取哪些周期的数据
             df_d_raw, n1 = get_data(ticker_input, period_select, "1d", source=source)
-            df_w_raw, n2 = get_data(ticker_input, period_select, "1wk", source=source)
-            df_h_raw, n3 = get_data(ticker_input, "1mo", "60m", source=source)
-            notes.extend(n1 + n2 + n3)
+            notes.extend(n1)
 
-            if (df_w_raw is None or len(df_w_raw) < 20) and df_d_raw is not None and len(df_d_raw) >= 80:
-                df_w_raw = resample_to_weekly(df_d_raw)
-                notes.append("周线使用日线重采样生成。")
+            df_w_raw = None
+            if view in ["短期 (1-4周)", "中长期 (1-6个月)"]:
+                df_w_raw, n2 = get_data(ticker_input, period_select, "1wk", source=source)
+                notes.extend(n2 if n2 else [])
+                if (df_w_raw is None or len(df_w_raw) < 20) and df_d_raw is not None and len(df_d_raw) >= 80:
+                    df_w_raw = resample_to_weekly(df_d_raw)
+                    notes.append("周线使用日线重采样生成。")
 
+            df_h_raw = None
+            if view in ["极短期 (1-5天)", "短期 (1-4周)"]:
+                df_h_raw, n3 = get_data(ticker_input, "1mo", "60m", source=source)
+                notes.extend(n3 if n3 else [])
+
+            # 计算指标
             df_d = add_advanced_indicators(df_d_raw) if df_d_raw is not None else None
             df_w = add_advanced_indicators(df_w_raw) if df_w_raw is not None else None
             df_h = add_advanced_indicators(df_h_raw) if df_h_raw is not None else None
 
-            analysis = detailed_analysis(df_d, pe=pe, pb=pb) if df_d is not None else None
-            score_d = get_score(df_d)
+            # 分析日线（传入不同的ATR乘数）
+            if view == "极短期 (1-5天)":
+                atr_mult = 1.2
+            elif view == "短期 (1-4周)":
+                atr_mult = 1.5
+            else:
+                atr_mult = 1.8
+            analysis = detailed_analysis(df_d, pe=pe, pb=pb, atr_multiplier=atr_mult) if df_d is not None else None
+
+            # 计算各周期得分
+            score_d = get_score(df_d) if df_d is not None else 0
             score_w = get_score(df_w) if df_w is not None else 0
             score_h = get_score(df_h) if df_h is not None else 0
 
@@ -1238,11 +1595,31 @@ with left_col:
             else:
                 composite_score = 0.0
 
+            # 准备额外数据用于AI报告
+            extra_ai = {}
+            if df_h is not None and len(df_h) > 0:
+                h_last = df_h.iloc[-1]
+                extra_ai["hourly"] = {
+                    "price": float(h_last["Close"]),
+                    "rsi": h_last.get("RSI", np.nan),
+                    "macd_hist": h_last.get("MACD_hist", np.nan),
+                    "vol_ratio": h_last.get("Vol_Ratio", np.nan),
+                }
+            if df_w is not None and len(df_w) > 0:
+                w_last = df_w.iloc[-1]
+                extra_ai["weekly"] = {
+                    "price": float(w_last["Close"]),
+                    "rsi": w_last.get("RSI", np.nan),
+                    "macd_hist": w_last.get("MACD_hist", np.nan),
+                    "ma20": w_last.get("MA20", np.nan),
+                }
+
             result = {
                 "ticker": ticker_input,
                 "stock_name": stock_name,
                 "analysis": analysis,
                 "df_d": df_d,
+                "df_h": df_h,
                 "scores": scores,
                 "weights": weights,
                 "availability": availability,
@@ -1250,10 +1627,12 @@ with left_col:
                 "notes": list(dict.fromkeys(notes)),
                 "source": source,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "extra_ai": extra_ai,
+                "fund_trend": fund_trend,
             }
             st.session_state.analysis_result = result
 
-            # 自动生成 AI 报告（如果启用且 API Key 存在）
+            # 自动生成 AI 报告
             if enable_ai_report and ai_api_key and analysis is not None:
                 with st.spinner("AI 正在自动生成深度报告..."):
                     st.session_state.ai_report_text = ai_analysis(
@@ -1262,10 +1641,12 @@ with left_col:
                         stock_name=stock_name,
                         api_key=ai_api_key,
                         base_url=ai_base_url,
-                        model=ai_report_model,   # 使用用户选择的模型
+                        model=ai_report_model,
+                        view=view,
+                        extra_data=extra_ai,
+                        fund_trend=fund_trend,
                     )
             else:
-                # 如果未启用或没有 API Key，清空已有报告
                 st.session_state.ai_report_text = ""
 
     # 显示分析结果
@@ -1306,13 +1687,21 @@ with left_col:
             st.markdown('<div class="metrics-grid">', unsafe_allow_html=True)
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.markdown(f'<div class="metric-card"><div class="metric-label">综合评分</div><div class="metric-value">{result["composite_score"]:.1f}</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="metric-card"><div class="metric-label">综合评分</div><div class="metric-value">{result["composite_score"]:.1f}</div></div>',
+                    unsafe_allow_html=True)
             with col2:
-                st.markdown(f'<div class="metric-card"><div class="metric-label">趋势</div><div class="metric-value">{analysis["trend"]}</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="metric-card"><div class="metric-label">趋势</div><div class="metric-value">{analysis["trend"]}</div></div>',
+                    unsafe_allow_html=True)
             with col3:
-                st.markdown(f'<div class="metric-card"><div class="metric-label">量价结构</div><div class="metric-value">{analysis["vpa_signal"]}</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="metric-card"><div class="metric-label">量价结构</div><div class="metric-value">{analysis["vpa_signal"]}</div></div>',
+                    unsafe_allow_html=True)
             with col4:
-                st.markdown(f'<div class="metric-card"><div class="metric-label">总评分</div><div class="metric-value">{analysis["total_score"]} / 100</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="metric-card"><div class="metric-label">总评分</div><div class="metric-value">{analysis["total_score"]} / 100</div></div>',
+                    unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
             # 操盘建议
@@ -1333,7 +1722,7 @@ with left_col:
             cols[3].metric("目标位", f"{analysis['take_profit']:.2f}")
             st.write(f"盈亏比：**{analysis['risk_reward']:.2f}** ｜ 建议仓位上限：**{analysis['position_size']:.0%}**")
 
-            # 决策推导（通俗化）
+            # 决策推导（通俗化）与原代码相同，略...
             with st.expander("🔍 决策推导（技术指标解读）", expanded=False):
                 def trend_desc(ma5, ma10, ma20, ma60, ma120, price):
                     if ma5 > ma10 > ma20:
@@ -1348,24 +1737,33 @@ with left_col:
                         long_trend = "中长期均线下方，长期趋势偏弱"
                     return f"{short_trend}；{long_trend}"
 
+
                 st.markdown("**1️⃣ 趋势判断**")
-                st.write(f"- {trend_desc(analysis['ma5'], analysis['ma10'], analysis['ma20'], analysis['ma60'], analysis['ma120'], analysis['price'])}")
-                st.write(f"- 趋势强度：{'强趋势' if analysis['adx'] >= 25 else '弱趋势/震荡'}，ADX={analysis['adx']:.1f}；多头力量+DI={analysis['plus_di']:.1f}，空头力量-DI={analysis['minus_di']:.1f}。")
-                st.write(f"- MACD：{'红柱（多头动能）' if analysis['macd_hist'] > 0 else '绿柱（空头动能）'}，快线DIF={analysis['macd']:.3f}，慢线DEA={analysis['macd_signal']:.3f}。")
+                st.write(
+                    f"- {trend_desc(analysis['ma5'], analysis['ma10'], analysis['ma20'], analysis['ma60'], analysis['ma120'], analysis['price'])}")
+                st.write(
+                    f"- 趋势强度：{'强趋势' if analysis['adx'] >= 25 else '弱趋势/震荡'}，ADX={analysis['adx']:.1f}；多头力量+DI={analysis['plus_di']:.1f}，空头力量-DI={analysis['minus_di']:.1f}。")
+                st.write(
+                    f"- MACD：{'红柱（多头动能）' if analysis['macd_hist'] > 0 else '绿柱（空头动能）'}，快线DIF={analysis['macd']:.3f}，慢线DEA={analysis['macd_signal']:.3f}。")
 
                 st.markdown("**2️⃣ 量价配合**")
-                st.write(f"- {analysis['vpa_detail']}。当前量比{analysis['vol_ratio']:.2f}，{'放量' if analysis['vol_ratio']>1.2 else '缩量' if analysis['vol_ratio']<0.8 else '正常'}。")
+                st.write(
+                    f"- {analysis['vpa_detail']}。当前量比{analysis['vol_ratio']:.2f}，{'放量' if analysis['vol_ratio'] > 1.2 else '缩量' if analysis['vol_ratio'] < 0.8 else '正常'}。")
                 if analysis["volume_price_signals"]:
                     for sig in analysis["volume_price_signals"]:
                         st.write(f"  - {sig}")
 
                 st.markdown("**3️⃣ 超买超卖**")
-                st.write(f"- RSI={analysis['rsi']:.1f}，{'超买区域，注意回调风险' if analysis['rsi']>70 else '超卖区域，可能反弹' if analysis['rsi']<30 else '中性区域，动能正常'}。")
-                st.write(f"- 乖离率BIAS={analysis['bias']:.2f}%，{'偏离过大，有回归需求' if abs(analysis['bias'])>8 else '偏离正常，趋势延续'}。")
+                st.write(
+                    f"- RSI={analysis['rsi']:.1f}，{'超买区域，注意回调风险' if analysis['rsi'] > 70 else '超卖区域，可能反弹' if analysis['rsi'] < 30 else '中性区域，动能正常'}。")
+                st.write(
+                    f"- 乖离率BIAS={analysis['bias']:.2f}%，{'偏离过大，有回归需求' if abs(analysis['bias']) > 8 else '偏离正常，趋势延续'}。")
 
                 st.markdown("**4️⃣ 资金流向**")
-                st.write(f"- CMF={analysis['cmf']:.3f}，{'资金净流入' if analysis['cmf']>0 else '资金净流出' if analysis['cmf']<0 else '资金平衡'}。")
-                st.write(f"- MFI={analysis['mfi']:.1f}，{'超买过热' if analysis['mfi']>80 else '超卖吸筹' if analysis['mfi']<20 else '资金健康'}。")
+                st.write(
+                    f"- CMF={analysis['cmf']:.3f}，{'资金净流入' if analysis['cmf'] > 0 else '资金净流出' if analysis['cmf'] < 0 else '资金平衡'}。")
+                st.write(
+                    f"- MFI={analysis['mfi']:.1f}，{'超买过热' if analysis['mfi'] > 80 else '超卖吸筹' if analysis['mfi'] < 20 else '资金健康'}。")
                 st.write(f"- OBV背离：{analysis['obv_div']}。")
 
                 st.markdown("**5️⃣ 形态与背离**")
@@ -1377,9 +1775,27 @@ with left_col:
                     st.write(f"价格形态：{', '.join(analysis['price_patterns'])}")
                 else:
                     st.write("价格形态：无明显结构")
-                st.write(f"背离信号：MACD={analysis['macd_divergence']}，RSI={analysis['rsi_divergence']}，{analysis['obv_div']}。")
+                st.write(
+                    f"背离信号：MACD={analysis['macd_divergence']}，RSI={analysis['rsi_divergence']}，{analysis['obv_div']}。")
 
-            # 量价图谱
+            # 财务趋势展示（如果启用且数据存在）
+            if enable_fundamental and result.get("fund_trend") and result["fund_trend"].get("periods"):
+                with st.expander("📊 财务趋势分析（最近4个报告期）", expanded=False):
+                    ft = result["fund_trend"]
+                    periods = ft["periods"]
+                    # 构建表格
+                    data = {
+                        "报告期": periods,
+                        "营收TTM（亿元）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["revenue"]],
+                        "净利润TTM（亿元）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["net_income"]],
+                        "ROE（%）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["roe"]],
+                        "资产负债率（%）": [f"{x:.2f}" if not pd.isna(x) else "N/A" for x in ft["debt_ratio"]],
+                    }
+                    df_fund = pd.DataFrame(data)
+                    st.dataframe(df_fund, use_container_width=True)
+                    st.write(f"**趋势总结**：{ft['trend_summary']}")
+
+            # 量价图谱（日线）
             with st.expander("📈 量价图谱（日线）", expanded=True):
                 fig = build_chart(
                     result["df_d"], period_select, result["ticker"],
@@ -1391,13 +1807,22 @@ with left_col:
                 else:
                     st.warning("图表数据不足，无法绘制。")
 
-            # AI报告（根据开关显示）
+            # 如果是极短期或短期，且小时线可用，额外展示小时线图表
+            if (view in ["极短期 (1-5天)", "短期 (1-4周)"]) and result.get("df_h") is not None and len(
+                    result["df_h"]) > 0:
+                with st.expander("⏱️ 小时线图谱（辅助短线决策）", expanded=False):
+                    fig_h = build_hourly_chart(result["df_h"], result["ticker"])
+                    if fig_h is not None:
+                        st.plotly_chart(fig_h, use_container_width=True)
+                    else:
+                        st.warning("小时线数据不足，无法绘图。")
+
+            # AI报告
             if enable_ai_report:
                 with st.expander("🤖 AI 深度报告", expanded=True):
                     if not ai_api_key:
                         st.info("请先在左侧输入 API Key。")
                     else:
-                        # 手动重新生成按钮
                         if st.button("🔄 重新生成 AI 报告", key="btn_regenerate_ai", use_container_width=True):
                             with st.spinner("AI 正在重新生成..."):
                                 st.session_state.ai_report_text = ai_analysis(
@@ -1406,9 +1831,11 @@ with left_col:
                                     stock_name=result["stock_name"],
                                     api_key=ai_api_key,
                                     base_url=ai_base_url,
-                                    model=ai_report_model,   # 使用用户选择的模型
+                                    model=ai_report_model,
+                                    view=view,
+                                    extra_data=result.get("extra_ai", {}),
+                                    fund_trend=result.get("fund_trend"),
                                 )
-                        # 显示已生成的报告
                         ai_text = st.session_state.get("ai_report_text", "")
                         if ai_text:
                             st.markdown(ai_text)
