@@ -23,15 +23,15 @@ PERIOD_DAYS = {
     "5y": 1260,
 }
 NEW_TOKEN_MODEL_PREFIX = ("gpt-5", "gpt-4.1", "o3", "o4")
-DEEPSEEK_MODEL = "deepseek-v3.2-speciale"   # 固定用于AI报告
+# 移除硬编码的 ai_report_model，改为在侧边栏动态选择
 
 # =========================
 # 页面配置
 # =========================
-st.set_page_config(layout="wide", page_title="交易员：量价趋势洞察系统 Pro")
+st.set_page_config(layout="wide", page_title="交易员：量价趋势洞察系统")
 
 # =========================
-# 高阶美化样式
+# 高阶美化样式（保持不变）
 # =========================
 st.markdown("""
 <style>
@@ -193,7 +193,7 @@ st.title("🦅 交易员：量价趋势洞察系统")
 st.caption("核心原则：趋势定方向，量价定强弱，结构定买卖，风控定仓位。")
 
 # =========================
-# 工具函数（与原代码一致，略作保留）
+# 工具函数（与原代码一致，此处保留完整）
 # =========================
 def is_a_share_code(ticker: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", ticker.strip().upper()))
@@ -214,7 +214,8 @@ def market_colors(ticker: str):
 
 def use_max_completion_tokens(model: str) -> bool:
     # 对于 deepseek 模型不使用 max_completion_tokens
-    if model == DEEPSEEK_MODEL:
+    # 注意：这里判断的是模型名称中是否包含 'deepseek'，而不是硬编码常量
+    if "deepseek" in model.lower():
         return False
     return isinstance(model, str) and model.startswith(NEW_TOKEN_MODEL_PREFIX)
 
@@ -366,9 +367,8 @@ def resample_to_weekly(df_daily: pd.DataFrame):
     }).dropna())
     return w
 
-# ----- 技术指标函数（与原代码相同，此处省略以节省篇幅，实际运行时保留全部）-----
+# ----- 技术指标函数（完整保留）-----
 def add_advanced_indicators(df: pd.DataFrame):
-    # 完整代码与原代码一致，此处省略重复内容，实际部署需保留
     if df is None or len(df) < 20:
         return df
     out = df.copy()
@@ -428,7 +428,6 @@ def add_advanced_indicators(df: pd.DataFrame):
     out.replace([np.inf, -np.inf], np.nan, inplace=True)
     return out
 
-
 def find_support_resistance(df: pd.DataFrame, lookback: int = 80):
     recent = df.tail(lookback)
     highs = recent["High"]
@@ -449,7 +448,6 @@ def find_support_resistance(df: pd.DataFrame, lookback: int = 80):
     resistance = np.mean(resistance_candidates[-3:]) if resistance_candidates else highs.tail(20).max()
     support = np.mean(support_candidates[-3:]) if support_candidates else lows.tail(20).min()
     return float(support), float(resistance)
-
 
 def volume_price_signals(df: pd.DataFrame):
     signals = []
@@ -480,7 +478,6 @@ def volume_price_signals(df: pd.DataFrame):
     )
     return signals
 
-
 def detect_candle_patterns(df: pd.DataFrame):
     patterns = []
     if df is None or len(df) < 2:
@@ -506,7 +503,6 @@ def detect_candle_patterns(df: pd.DataFrame):
             patterns.append("看跌吞没")
 
     return patterns
-
 
 def detect_price_patterns(df: pd.DataFrame, lookback: int = 30):
     patterns = []
@@ -538,7 +534,6 @@ def detect_price_patterns(df: pd.DataFrame, lookback: int = 30):
 
     return patterns
 
-
 def _last_two_pivots(series: pd.Series, mode: str = "high", window: int = 5):
     roll = series.rolling(window, center=True, min_periods=window)
     if mode == "high":
@@ -549,7 +544,6 @@ def _last_two_pivots(series: pd.Series, mode: str = "high", window: int = 5):
     if len(pivots) >= 2:
         return pivots.index[-2], pivots.index[-1]
     return None, None
-
 
 def detect_divergence(price: pd.Series, indicator: pd.Series, lookback: int = 30):
     p = price.tail(lookback).dropna()
@@ -571,18 +565,14 @@ def detect_divergence(price: pd.Series, indicator: pd.Series, lookback: int = 30
 
     return "无背离"
 
-
 def detect_macd_divergence(df: pd.DataFrame, lookback: int = 30):
     return detect_divergence(df["Close"], df["MACD"], lookback=lookback)
-
 
 def detect_rsi_divergence(df: pd.DataFrame, lookback: int = 30):
     return detect_divergence(df["Close"], df["RSI"], lookback=lookback)
 
-
 def detect_obv_divergence(df: pd.DataFrame, lookback: int = 30):
     return detect_divergence(df["Close"], df["OBV"], lookback=lookback)
-
 
 def describe_chip_concentration(df: pd.DataFrame):
     vol = df["Volume"].tail(20)
@@ -600,7 +590,6 @@ def describe_chip_concentration(df: pd.DataFrame):
     if vol_cv > 1.0:
         return "筹码分散，波动可能较大"
     return "筹码中性，波动中等"
-
 
 def detailed_analysis(df: pd.DataFrame, pe=None, pb=None):
     if df is None or len(df) < 35:
@@ -856,7 +845,6 @@ def detailed_analysis(df: pd.DataFrame, pe=None, pb=None):
         "rsi_divergence": detect_rsi_divergence(df),
     }
 
-
 def get_score(df: pd.DataFrame):
     if df is None or len(df) < 30:
         return 0
@@ -901,7 +889,6 @@ def get_score(df: pd.DataFrame):
         score += 10
 
     return int(np.clip(score, 0, 100))
-
 
 def build_chart(df: pd.DataFrame, period: str, ticker: str, support=None, resistance=None):
     if df is None or df.empty:
@@ -1029,7 +1016,6 @@ def build_chart(df: pd.DataFrame, period: str, ticker: str, support=None, resist
 
     return fig
 
-
 def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base_url: str, model: str):
     pe_text = "N/A" if analysis["pe"] is None else f"{analysis['pe']:.2f}"
     pb_text = "N/A" if analysis["pb"] is None else f"{analysis['pb']:.2f}"
@@ -1089,7 +1075,6 @@ def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base
     except Exception as e:
         return f"⚠️ AI分析调用失败：{e}"
 
-
 def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url: str):
     if not api_key:
         return "请先在左侧输入 API Key。"
@@ -1099,7 +1084,6 @@ def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    # 优先尝试 chat.completions（兼容大多数网关）
     try:
         kwargs = {"model": model, "messages": messages, "temperature": 0.5}
         if use_max_completion_tokens(model):
@@ -1110,7 +1094,6 @@ def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url
         resp = client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content
     except Exception as e1:
-        # codex兜底尝试 responses API
         if "codex" in model.lower():
             try:
                 input_items = []
@@ -1129,8 +1112,6 @@ def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url
                 text = getattr(resp, "output_text", None)
                 if text:
                     return text
-
-                # 兼容兜底解析
                 outputs = []
                 for item in getattr(resp, "output", []):
                     for c in getattr(item, "content", []):
@@ -1140,9 +1121,7 @@ def chat_ai(user_message: str, history: list, model: str, api_key: str, base_url
                 return "".join(outputs) if outputs else "（模型返回空内容）"
             except Exception as e2:
                 return f"⚠️ 聊天调用失败：{e2}"
-
         return f"⚠️ 聊天调用失败：{e1}"
-
 
 # =========================
 # 侧边栏配置
@@ -1164,24 +1143,30 @@ with st.sidebar:
     st.subheader("🗄️ 数据源")
     data_source = st.selectbox(
         "选择数据源",
-        ["akshare（A股更稳，需本地已安装 akshare）", "yfinance（免费，部分市场延迟）",],
+        ["akshare（A股更稳，需本地已安装 akshare）", "yfinance（免费，部分市场延迟）"],
         index=0,
     )
-    if "akshare" in data_source:
-        st.subheader("🤖 AI 配置")
+
+    st.subheader("🤖 AI 配置")
     default_key = os.getenv("AI_API_KEY")
     ai_api_key = st.text_input("API Key", type="password", value=default_key)
     ai_base_url = st.text_input("Base URL", value="https://aihubmix.com/v1")
 
-    # 新增：启用AI报告开关
-    enable_ai_report = st.checkbox("启用 AI 深度报告", value=True, help="使用 deepseek-v3.2-speciale 模型生成分析报告")
-    st.caption(f"AI报告模型：`{DEEPSEEK_MODEL}` ")
+    # 新增：AI报告模型选择
+    ai_report_model = st.selectbox(
+        "AI报告模型",
+        ["deepseek-v3.2", "deepseek-v3.2-speciale", "gpt-4.1-free", "gpt-4o-free", "gpt-4.1-mini-free", "gpt-4.1-nano-free"],
+        index=0,
+        help="选择用于生成AI深度报告的模型，推荐 deepseek-v3.2-speciale"
+    )
+    enable_ai_report = st.checkbox("启用 AI 深度报告", value=True, help="使用所选模型生成分析报告")
+    st.caption(f"当前AI报告模型：{ai_report_model}")
 
     # 聊天模型选择
     chat_model = st.selectbox(
         "聊天模型",
-        ["gpt-5.4-high", "gpt-5.3-codex", "gpt-4.1", "o3-mini", "gpt-5.2"],
-        index=4,
+        ["gpt-4.1-free", "gpt-4.1-nano-free", "gpt-5.4-high", "gpt-5.3-codex", "gpt-4.1", "o3-mini", "gpt-5.2"],
+        index=0,
         key="chat_model_selector",
     )
 
@@ -1277,10 +1262,10 @@ with left_col:
                         stock_name=stock_name,
                         api_key=ai_api_key,
                         base_url=ai_base_url,
-                        model=DEEPSEEK_MODEL,
+                        model=ai_report_model,   # 使用用户选择的模型
                     )
             else:
-                # 如果未启用或没有 API Key，清空已有报告（避免显示旧数据）
+                # 如果未启用或没有 API Key，清空已有报告
                 st.session_state.ai_report_text = ""
 
     # 显示分析结果
@@ -1350,7 +1335,6 @@ with left_col:
 
             # 决策推导（通俗化）
             with st.expander("🔍 决策推导（技术指标解读）", expanded=False):
-                # 辅助函数：将数值转为通俗描述
                 def trend_desc(ma5, ma10, ma20, ma60, ma120, price):
                     if ma5 > ma10 > ma20:
                         short_trend = "短期多头排列，价格处于强势"
@@ -1422,7 +1406,7 @@ with left_col:
                                     stock_name=result["stock_name"],
                                     api_key=ai_api_key,
                                     base_url=ai_base_url,
-                                    model=DEEPSEEK_MODEL,
+                                    model=ai_report_model,   # 使用用户选择的模型
                                 )
                         # 显示已生成的报告
                         ai_text = st.session_state.get("ai_report_text", "")
@@ -1433,7 +1417,7 @@ with left_col:
             else:
                 st.info("AI深度报告已关闭，如需使用请在左侧开启。")
 
-# 右侧聊天区域（保持不变）
+# 右侧聊天区域
 with right_col:
     st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
     st.subheader("💬 AI 自由问答助手")
