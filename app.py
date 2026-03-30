@@ -1035,54 +1035,55 @@ def ai_analysis(analysis: dict, ticker: str, stock_name: str, api_key: str, base
     pb_text = "N/A" if analysis["pb"] is None else f"{analysis['pb']:.2f}"
 
     prompt = f"""
-请基于以下量化技术数据，对 {stock_name} ({ticker}) 输出专业交易分析：
+你是一位拥有20年实战经验的职业交易员，擅长量价分析、趋势跟踪和资金管理。请基于以下量化技术数据，对 {stock_name} ({ticker}) 输出一份专业交易分析报告。报告必须通俗易懂，避免枯燥的数字堆砌，要用交易员的语言解释每个指标的含义及其背后的市场心理。同时，报告必须完整，不能中断。
 
-【价格与量能】
-- 价格：{analysis['price']:.2f}（{analysis['change']:+.2f}%）
-- 量比：{analysis['vol_ratio']:.2f}，成交量：{analysis['volume']:.0f}，20均量：{analysis['vol_ma20']:.0f}
+【当前市场状态】
+- 价格：{analysis['price']:.2f} 元，当日涨跌幅 {analysis['change']:+.2f}%
+- 成交量：{analysis['volume']:.0f} 手，20日均量 {analysis['vol_ma20']:.0f} 手，量比 {analysis['vol_ratio']:.2f}
+- 估值：PE={pe_text}，PB={pb_text}
 
-【趋势与动量】
-- MA5/10/20/60/120：{analysis['ma5']:.2f}/{analysis['ma10']:.2f}/{analysis['ma20']:.2f}/{analysis['ma60']:.2f}/{analysis['ma120']:.2f}
-- 趋势：{analysis['trend']}（{analysis['trend_strength']}）
-- ADX={analysis['adx']:.1f}, +DI={analysis['plus_di']:.1f}, -DI={analysis['minus_di']:.1f}
-- MACD: DIF={analysis['macd']:.3f}, DEA={analysis['macd_signal']:.3f}, Hist={analysis['macd_hist']:.3f}
-- RSI={analysis['rsi']:.1f}（{analysis['rsi_status']}），BIAS={analysis['bias']:.2f}%（{analysis['bias_status']}）
+【趋势与动能】
+- 均线：MA5={analysis['ma5']:.2f}，MA10={analysis['ma10']:.2f}，MA20={analysis['ma20']:.2f}，MA60={analysis['ma60']:.2f}，MA120={analysis['ma120']:.2f}
+- 趋势强度：ADX={analysis['adx']:.1f}，+DI={analysis['plus_di']:.1f}，-DI={analysis['minus_di']:.1f}
+- MACD：DIF={analysis['macd']:.3f}，DEA={analysis['macd_signal']:.3f}，柱状值={analysis['macd_hist']:.3f}
+- RSI={analysis['rsi']:.1f}，乖离率BIAS={analysis['bias']:.2f}%
 
 【资金与结构】
-- CMF={analysis['cmf']:.3f}, MFI={analysis['mfi']:.1f}, OBV背离={analysis['obv_div']}
+- 资金流：CMF={analysis['cmf']:.3f}，MFI={analysis['mfi']:.1f}，OBV背离={analysis['obv_div']}
 - 量价信号：{analysis['vpa_signal']}（{analysis['vpa_detail']}）
 - K线形态：{", ".join(analysis['candle_patterns']) if analysis['candle_patterns'] else "无"}
 - 价格形态：{", ".join(analysis['price_patterns']) if analysis['price_patterns'] else "无"}
-- 背离：MACD={analysis['macd_divergence']} / RSI={analysis['rsi_divergence']}
+- 背离：MACD={analysis['macd_divergence']}，RSI={analysis['rsi_divergence']}
 
 【风险参数】
-- 支撑/压力：{analysis['support']:.2f}/{analysis['resistance']:.2f}
-- 止损/目标：{analysis['stop_loss']:.2f}/{analysis['take_profit']:.2f}
+- 关键支撑/压力：{analysis['support']:.2f} / {analysis['resistance']:.2f}
+- 建议止损/目标：{analysis['stop_loss']:.2f} / {analysis['take_profit']:.2f}
 - 盈亏比：{analysis['risk_reward']:.2f}
-- 估值：PE={pe_text}, PB={pb_text}
+- 当前仓位建议上限：{analysis['position_size']:.0%}
 
-请按以下结构回答：
-1) 趋势与强弱结论（先给结论）
-2) 关键证据（至少5条）
-3) 三种情景（突破上涨 / 震荡 / 跌破）下的应对
-4) 最终建议（买入/卖出/观望）+ 建议仓位 + 风险提示
+请按以下结构输出，每个部分都要结合数据给出具体分析，语言要像交易员在复盘一样：
+1) 趋势与强弱结论（先给出明确的结论：多头、空头、震荡，并说明强度）
+2) 关键证据（至少5条，每条证据要解释其市场含义，为什么重要）
+3) 三种情景推演（假设未来走势分为三种情况：突破上涨 / 区间震荡 / 破位下跌，分别给出应对策略）
+4) 最终建议（明确给出：买入/卖出/观望，并说明仓位大小和理由） + 风险提示（最大风险点）
+
+注意：回答必须完整，不要中途截断。用简洁、专业、富有洞察力的语言，避免冗余。
 """
-
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
         kwargs = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "你是一位职业交易员，输出务必结构化、可执行。"},
+                {"role": "system", "content": "你是一位资深交易员，输出要专业、简洁、有洞察力，避免枯燥的数字罗列。"},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.5,
+            "temperature": 0.6,
         }
+        # 对于 deepseek 模型，使用 max_tokens 而非 max_completion_tokens
         if use_max_completion_tokens(model):
-            kwargs["max_completion_tokens"] = 1600
+            kwargs["max_completion_tokens"] = 3000
         else:
-            kwargs["max_tokens"] = 1600
-
+            kwargs["max_tokens"] = 3000
         resp = client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content
     except Exception as e:
